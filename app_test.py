@@ -1,4 +1,6 @@
 
+import uuid
+
 import streamlit as st
 
 from agents.register_agents import create_orchestrator
@@ -23,14 +25,20 @@ def get_orchestrator():
 
 orchestrator = get_orchestrator()
 
+# One conversation_id per browser session, so REX Assistant's
+# conversation memory (profile, consent, language) persists across
+# messages within this session but never leaks into another session.
+if "conversation_id" not in st.session_state:
+    st.session_state.conversation_id = str(uuid.uuid4())
+
 
 if "test_messages" not in st.session_state:
     st.session_state.test_messages = [
         {
             "role": "assistant",
             "content": (
-                "Hello! Ask me to find a curriculum example or "
-                "generate a new curriculum draft."
+                "Hello! Ask me to find a curriculum example, generate a "
+                "new curriculum draft, or recommend a course."
             ),
         }
     ]
@@ -183,7 +191,12 @@ if user_input:
 
     with st.chat_message("assistant"):
         with st.spinner("Orchestrator is processing your request..."):
-            response = orchestrator.handle_request(user_input)
+            response = orchestrator.handle_request(
+                user_input,
+                context={
+                    "conversation_id": st.session_state.conversation_id
+                },
+            )
 
             if response.get("status") != "success":
                 answer = (
@@ -195,52 +208,67 @@ if user_input:
             else:
                 results = response.get("result") or []
 
-                agent_results = [
+                successful_results = [
                     item
                     for item in results
-                    if item.get("agent_name") == "curriculum_research"
-                    and item.get("status") == "success"
+                    if item.get("status") == "success"
                 ]
 
-                if not agent_results:
+                if not successful_results:
                     answer = (
                         "The orchestrator did not return a successful "
-                        "curriculum research result. Check agent registration "
-                        "and the orchestrator response."
+                        "result. Check agent registration and the "
+                        "orchestrator response."
                     )
                     st.warning(answer)
 
                 else:
-                    curriculum_result = (
-                        agent_results[0].get("result") or {}
-                    )
+                    answer_parts = []
 
-                    answer = curriculum_result.get(
-                        "message",
-                        "Curriculum request completed.",
-                    )
+                    for item in successful_results:
+                        agent_name = item.get("agent_name")
+                        agent_result = item.get("result") or {}
 
-                    curricula = curriculum_result.get("curricula", [])
+                        if agent_name == "curriculum_research":
+                            message = agent_result.get(
+                                "message",
+                                "Curriculum request completed.",
+                            )
 
-                    if curricula:
-                        formatted_curricula = [
-                            format_curriculum(curriculum)
-                            for curriculum in curricula
-                        ]
+                            curricula = agent_result.get("curricula", [])
 
-                        answer += "\n\n" + "\n\n---\n\n".join(
-                            formatted_curricula
-                        )
-                    else:
-                        answer += (
-                            "\n\nNo matching curriculum examples "
-                            "were found."
-                        )
+                            if curricula:
+                                formatted_curricula = [
+                                    format_curriculum(curriculum)
+                                    for curriculum in curricula
+                                ]
 
-                    notice = curriculum_result.get("notice")
-                    if notice and notice not in answer:
-                        answer += f"\n\n> {notice}"
+                                message += "\n\n" + "\n\n---\n\n".join(
+                                    formatted_curricula
+                                )
+                            else:
+                                message += (
+                                    "\n\nNo matching curriculum examples "
+                                    "were found."
+                                )
 
+                            notice = agent_result.get("notice")
+                            if notice and notice not in message:
+                                message += f"\n\n> {notice}"
+
+                            answer_parts.append(message)
+
+                        elif agent_name == "rex_assistant":
+                            answer_parts.append(
+                                agent_result.get(
+                                    "answer", "No answer returned."
+                                )
+                            )
+
+                        else:
+                            answer_parts.append(str(agent_result))
+
+                    answer = "\n\n---\n\n".join(answer_parts)
                     st.markdown(answer)
 
     # Store the complete formatted response so it remains visible

@@ -326,7 +326,10 @@ class Orchestrator:
                 "context": {
                     **request.get("context", {}),
                     "language": request.get("language", "en"),
-                    "previous_results": results,
+                    # A snapshot, not a live reference: results keeps
+                    # growing after this call returns, and an agent
+                    # must only see what ran before it.
+                    "previous_results": list(results),
                 },
             }
 
