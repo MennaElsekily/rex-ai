@@ -15,6 +15,7 @@ from agents.register_agents import (
     create_orchestrator,
     make_rex_assistant_handler,
 )
+from agents.rfp_research import RFPResearchAgent
 
 
 def _rex_response(answer="ok", state=None, status="success"):
@@ -39,6 +40,58 @@ def test_rex_assistant_is_registered(tmp_path):
 
     assert REX_ASSISTANT_AGENT_NAME in orchestrator.agents
     assert "curriculum_research" in orchestrator.agents
+
+
+def test_rfp_research_is_registered(tmp_path):
+    store = ConversationStore(db_path=tmp_path / "conv.sqlite3")
+    fake_rfp_agent = MagicMock()
+    fake_rfp_agent.AGENT_NAME = "rfp_research"
+
+    orchestrator = create_orchestrator(
+        rex_assistant_agent=MagicMock(),
+        rfp_research_agent=fake_rfp_agent,
+        conversation_store=store,
+    )
+
+    assert "rfp_research" in orchestrator.agents
+    assert "rex_assistant" in orchestrator.agents
+    assert "curriculum_research" in orchestrator.agents
+
+
+def test_rex_assistant_and_rfp_research_share_one_conversation_store(tmp_path):
+    """
+    Confirms ConversationStore reusability (Phase 8): both agents are
+    constructed with the SAME store instance by create_orchestrator(),
+    not one each.
+    """
+    store = ConversationStore(db_path=tmp_path / "conv.sqlite3")
+
+    orchestrator = create_orchestrator(conversation_store=store)
+
+    assert orchestrator.rex_assistant_agent is not None
+    assert orchestrator.rfp_research_agent.conversation_store is store
+    assert orchestrator.conversation_store is store
+
+
+def test_rfp_research_handler_needs_no_adapter(tmp_path):
+    """
+    Unlike REX Assistant, RFPResearchAgent.process_request already
+    matches the orchestrator's AgentHandler contract directly.
+    """
+    store = ConversationStore(db_path=tmp_path / "conv.sqlite3")
+    rfp_agent = RFPResearchAgent(conversation_store=store)
+
+    orchestrator = create_orchestrator(
+        rex_assistant_agent=MagicMock(),
+        rfp_research_agent=rfp_agent,
+        conversation_store=store,
+    )
+
+    # Bound methods aren't `is`-identical on each access, so compare
+    # the underlying function and the bound instance instead.
+    registered_handler = orchestrator.agents["rfp_research"]
+    assert registered_handler.__func__ is rfp_agent.process_request.__func__
+    assert registered_handler.__self__ is rfp_agent
 
 
 def test_adapter_extracts_and_passes_correct_arguments(tmp_path):

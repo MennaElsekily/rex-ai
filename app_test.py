@@ -38,7 +38,8 @@ if "test_messages" not in st.session_state:
             "role": "assistant",
             "content": (
                 "Hello! Ask me to find a curriculum example, generate a "
-                "new curriculum draft, or recommend a course."
+                "new curriculum draft, recommend a course, or search "
+                "for education tenders in Egypt or Saudi Arabia."
             ),
         }
     ]
@@ -264,6 +265,98 @@ if user_input:
                                     "answer", "No answer returned."
                                 )
                             )
+
+                        elif agent_name == "rfp_research":
+                            lines = [agent_result.get("message", "")]
+
+                            # Show exactly which API(s) were used and
+                            # whether each actually succeeded -- an API
+                            # error/unavailability must never look like
+                            # "zero tenders found."
+                            api_status_labels = {
+                                "success": "✅ Success",
+                                "unavailable": "⚠️ No API available",
+                                "awaiting_credentials": "🔑 Awaiting credentials",
+                                "error": "❌ Request failed",
+                            }
+                            api_results = agent_result.get("api_results", [])
+                            if api_results:
+                                lines.append("\n**API sources used:**")
+                                for api_result in api_results:
+                                    status = api_result.get("status")
+                                    lines.append(
+                                        f"- {api_result.get('source_name')}: "
+                                        f"{api_status_labels.get(status, status)} "
+                                        f"({api_result.get('raw_record_count', 0)} raw record(s)) "
+                                        f"— {api_result.get('message', '')}"
+                                    )
+                                lines.append("")
+
+                            # review_status describes REVIEW PRIORITY
+                            # only (Egypt vs Saudi business rule) -- it
+                            # never implies a tender is verified open
+                            # or that the academy qualifies.
+                            review_labels = {
+                                "flagged_for_immediate_review": (
+                                    "⚑ Flagged for immediate review (Egypt)"
+                                ),
+                                "monitored_pipeline": (
+                                    "Monitored pipeline (Saudi Arabia)"
+                                ),
+                            }
+                            qualification_labels = {
+                                "qualified": "✅ Qualified",
+                                "not_qualified": "❌ Not qualified",
+                                "unknown": "❓ Unknown (insufficient evidence)",
+                            }
+
+                            for opportunity in agent_result.get(
+                                "opportunities", []
+                            ):
+                                source_url = opportunity.get("source_url", "")
+                                title = opportunity.get("title") or opportunity.get("source_id", "")
+                                if source_url:
+                                    lines.append(f"- **[{title}]({source_url})**  ")
+                                else:
+                                    lines.append(f"- **{title}**  ")
+                                lines.append(
+                                    f"  ({opportunity.get('country')} — "
+                                    f"{review_labels.get(opportunity.get('review_status'), opportunity.get('review_status'))})"
+                                )
+                                if opportunity.get("reference_number"):
+                                    lines.append(
+                                        f"  Reference: {opportunity['reference_number']}"
+                                    )
+                                if opportunity.get("organization"):
+                                    lines.append(
+                                        f"  Organization: {opportunity['organization']}"
+                                    )
+                                if opportunity.get("deadline"):
+                                    lines.append(
+                                        f"  Deadline: {opportunity['deadline']}"
+                                    )
+                                lines.append(
+                                    f"  Source: {opportunity.get('source_name', 'unknown')} "
+                                    f"(verification: {opportunity.get('verification_status', 'unknown')})"
+                                )
+                                lines.append(
+                                    f"  {opportunity.get('ai_summary', '')}"
+                                )
+                                qualification_status = opportunity.get(
+                                    "qualification_status", "unknown"
+                                )
+                                lines.append(
+                                    f"  Qualification: "
+                                    f"{qualification_labels.get(qualification_status, qualification_status)}"
+                                    f" — {opportunity.get('qualification_reason', '')}"
+                                )
+                                missing = opportunity.get("missing_information")
+                                if missing:
+                                    lines.append(
+                                        f"  Missing/unverified: {', '.join(missing)}"
+                                    )
+
+                            answer_parts.append("\n".join(lines))
 
                         else:
                             answer_parts.append(str(agent_result))
