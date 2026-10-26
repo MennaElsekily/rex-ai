@@ -1,58 +1,768 @@
-
-[
-  {
-    "course_id": "COURSE001",
-    "name": "Python Programming Fundamentals",
-    "description": "An introductory course covering Python syntax, variables, data types, conditions, loops, functions, and basic problem solving.",
-    "department": "Computer Science",
-    "skill_level": "Beginner",
-    "target_audience": "Students with little or no programming experience",
-    "duration": null,
-    "price": null,
-    "prerequisites": [],
-    "skills": [
-      "Python",
-      "Programming",
-      "Problem Solving"
-    ]
+{
+  "_metadata": {
+    "dataset_type": "synthetic_development_data",
+    "warning": "Not official Andalusia Academy data. Sample EGP fees are fictional."
   },
-  {
-    "course_id": "COURSE002",
-    "name": "Introduction to Data Science",
-    "description": "An introductory course covering data analysis, data visualization, basic statistics, and working with datasets using Python.",
-    "department": "Data Science",
-    "skill_level": "Beginner",
-    "target_audience": "Students interested in data analysis",
-    "duration": null,
-    "price": null,
-    "prerequisites": [
-      "Basic computer skills"
-    ],
-    "skills": [
-      "Python",
-      "Data Analysis",
-      "Data Visualization",
-      "Statistics"
-    ]
-  },
-  {
-    "course_id": "COURSE003",
-    "name": "Machine Learning Fundamentals",
-    "description": "An introduction to machine learning concepts, supervised and unsupervised learning, model evaluation, and practical applications.",
-    "department": "Artificial Intelligence",
-    "skill_level": "Intermediate",
-    "target_audience": "Learners with basic Python and mathematics knowledge",
-    "duration": null,
-    "price": null,
-    "prerequisites": [
-      "Basic Python programming",
-      "Basic mathematics and statistics"
-    ],
-    "skills": [
-      "Machine Learning",
-      "Model Evaluation",
-      "Supervised Learning",
-      "Unsupervised Learning"
-    ]
-  }
-]
+  "courses": [
+    {
+      "course_id": "SYN-C001",
+      "title": "Python Programming Fundamentals",
+      "category": "Programming",
+      "description": "Illustrative training course covering practical skills in python programming fundamentals. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Basic computer literacy"
+      ],
+      "learning_outcomes": [
+        "Write scripts",
+        "create functions",
+        "use lists and dictionaries",
+        "debug simple programs"
+      ],
+      "duration_hours": 24,
+      "duration_weeks": 4,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 4200,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C002",
+      "title": "Data Analysis with Python",
+      "category": "Data Analytics",
+      "description": "Illustrative training course covering practical skills in data analysis with python. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Basic Python recommended"
+      ],
+      "learning_outcomes": [
+        "Clean data with pandas",
+        "perform exploratory analysis",
+        "create charts",
+        "summarize findings"
+      ],
+      "duration_hours": 30,
+      "duration_weeks": 5,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 5600,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner_to_intermediate",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C003",
+      "title": "SQL for Data Analysis",
+      "category": "Databases",
+      "description": "Illustrative training course covering practical skills in sql for data analysis. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Basic computer literacy"
+      ],
+      "learning_outcomes": [
+        "Write SELECT queries",
+        "join tables",
+        "aggregate data",
+        "use subqueries"
+      ],
+      "duration_hours": 18,
+      "duration_weeks": 3,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 3200,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C004",
+      "title": "Power BI Business Dashboards",
+      "category": "Business Intelligence",
+      "description": "Illustrative training course covering practical skills in power bi business dashboards. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Basic spreadsheet skills"
+      ],
+      "learning_outcomes": [
+        "Transform data",
+        "build models",
+        "create measures and visuals",
+        "build KPI dashboards"
+      ],
+      "duration_hours": 24,
+      "duration_weeks": 4,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 4800,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner_to_intermediate",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C005",
+      "title": "Machine Learning Foundations",
+      "category": "Artificial Intelligence",
+      "description": "Illustrative training course covering practical skills in machine learning foundations. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Python fundamentals; basic statistics recommended"
+      ],
+      "learning_outcomes": [
+        "Explain supervised learning",
+        "prepare datasets",
+        "train baseline models",
+        "evaluate models"
+      ],
+      "duration_hours": 36,
+      "duration_weeks": 6,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 7200,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "intermediate",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C006",
+      "title": "Generative AI for Business Productivity",
+      "category": "Artificial Intelligence",
+      "description": "Illustrative training course covering practical skills in generative ai for business productivity. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Basic digital literacy"
+      ],
+      "learning_outcomes": [
+        "Write task-specific prompts",
+        "evaluate output",
+        "identify privacy risks",
+        "design AI-assisted workflows"
+      ],
+      "duration_hours": 12,
+      "duration_weeks": 2,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 2600,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C007",
+      "title": "Project Management Essentials",
+      "category": "Management",
+      "description": "Illustrative training course covering practical skills in project management essentials. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "None"
+      ],
+      "learning_outcomes": [
+        "Define scope",
+        "build schedules",
+        "maintain risk registers",
+        "communicate project status"
+      ],
+      "duration_hours": 18,
+      "duration_weeks": 3,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 3500,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C008",
+      "title": "Cybersecurity Awareness for Organizations",
+      "category": "Cybersecurity",
+      "description": "Illustrative training course covering practical skills in cybersecurity awareness for organizations. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Basic computer literacy"
+      ],
+      "learning_outcomes": [
+        "Recognize social engineering",
+        "use MFA",
+        "handle suspicious links",
+        "report incidents"
+      ],
+      "duration_hours": 8,
+      "duration_weeks": 1,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 1500,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C009",
+      "title": "Digital Marketing Fundamentals",
+      "category": "Marketing",
+      "description": "Illustrative training course covering practical skills in digital marketing fundamentals. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Basic digital literacy"
+      ],
+      "learning_outcomes": [
+        "Define audiences",
+        "set objectives",
+        "select channels",
+        "interpret campaign metrics"
+      ],
+      "duration_hours": 20,
+      "duration_weeks": 3,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 3900,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C010",
+      "title": "Instructional Design and Learning Outcomes",
+      "category": "Education and Training",
+      "description": "Illustrative training course covering practical skills in instructional design and learning outcomes. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Training delivery or planning experience recommended"
+      ],
+      "learning_outcomes": [
+        "Write measurable outcomes",
+        "align activities and assessments",
+        "structure modules",
+        "evaluate training"
+      ],
+      "duration_hours": 16,
+      "duration_weeks": 3,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 3100,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner_to_intermediate",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C011",
+      "title": "Advanced Excel for Reporting",
+      "category": "Productivity",
+      "description": "Illustrative training course covering practical skills in advanced excel for reporting. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Basic Excel"
+      ],
+      "learning_outcomes": [
+        "Use lookup formulas",
+        "summarize with pivot tables",
+        "validate data",
+        "build reports"
+      ],
+      "duration_hours": 16,
+      "duration_weeks": 3,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 2800,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "intermediate",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C012",
+      "title": "Cloud Computing Fundamentals",
+      "category": "Cloud Computing",
+      "description": "Illustrative training course covering practical skills in cloud computing fundamentals. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Basic networking recommended"
+      ],
+      "learning_outcomes": [
+        "Compare service models",
+        "explain deployment models",
+        "describe access controls",
+        "estimate resource needs"
+      ],
+      "duration_hours": 20,
+      "duration_weeks": 3,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 4400,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C013",
+      "title": "Web Development with HTML, CSS and JavaScript",
+      "category": "Web Development",
+      "description": "Illustrative training course covering practical skills in web development with html, css and javascript. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Basic computer literacy"
+      ],
+      "learning_outcomes": [
+        "Structure pages with HTML",
+        "style responsive layouts",
+        "add JavaScript",
+        "publish a portfolio page"
+      ],
+      "duration_hours": 36,
+      "duration_weeks": 6,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 6500,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C014",
+      "title": "Communication and Presentation Skills",
+      "category": "Professional Skills",
+      "description": "Illustrative training course covering practical skills in communication and presentation skills. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "None"
+      ],
+      "learning_outcomes": [
+        "Structure presentations",
+        "adapt messages",
+        "use visual aids",
+        "respond to questions"
+      ],
+      "duration_hours": 10,
+      "duration_weeks": 2,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 1900,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C015",
+      "title": "Data Visualization and Storytelling",
+      "category": "Data Analytics",
+      "description": "Illustrative training course covering practical skills in data visualization and storytelling. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Spreadsheet or basic data-analysis experience"
+      ],
+      "learning_outcomes": [
+        "Select appropriate charts",
+        "avoid misleading visuals",
+        "create narratives",
+        "communicate caveats"
+      ],
+      "duration_hours": 14,
+      "duration_weeks": 2,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 3000,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "intermediate",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C016",
+      "title": "Python APIs with FastAPI",
+      "category": "Software Development",
+      "description": "Illustrative training course covering practical skills in python apis with fastapi. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Python functions and classes; basic HTTP"
+      ],
+      "learning_outcomes": [
+        "Create API endpoints",
+        "validate input",
+        "handle errors",
+        "test and document APIs"
+      ],
+      "duration_hours": 20,
+      "duration_weeks": 3,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 4600,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "intermediate",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C017",
+      "title": "Human Resources Analytics",
+      "category": "Human Resources",
+      "description": "Illustrative training course covering practical skills in human resources analytics. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Basic spreadsheet skills"
+      ],
+      "learning_outcomes": [
+        "Define HR metrics",
+        "clean sample data",
+        "interpret trends",
+        "communicate insights responsibly"
+      ],
+      "duration_hours": 16,
+      "duration_weeks": 3,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 3300,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner_to_intermediate",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C018",
+      "title": "Train the Trainer",
+      "category": "Education and Training",
+      "description": "Illustrative training course covering practical skills in train the trainer. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Expertise in a topic to teach"
+      ],
+      "learning_outcomes": [
+        "Plan sessions",
+        "facilitate participation",
+        "check understanding",
+        "improve using feedback"
+      ],
+      "duration_hours": 18,
+      "duration_weeks": 3,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 3700,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner_to_intermediate",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C019",
+      "title": "Business Analysis Fundamentals",
+      "category": "Business Analysis",
+      "description": "Illustrative training course covering practical skills in business analysis fundamentals. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Basic workplace communication"
+      ],
+      "learning_outcomes": [
+        "Identify stakeholders",
+        "write requirements",
+        "map processes",
+        "define acceptance criteria"
+      ],
+      "duration_hours": 20,
+      "duration_weeks": 3,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 4100,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner_to_intermediate",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    },
+    {
+      "course_id": "SYN-C020",
+      "title": "Responsible AI and Data Privacy",
+      "category": "Artificial Intelligence",
+      "description": "Illustrative training course covering practical skills in responsible ai and data privacy. This record is synthetic and not an official academy offering.",
+      "target_audience": [
+        "beginners",
+        "students",
+        "working professionals"
+      ],
+      "prerequisites": [
+        "Basic digital literacy"
+      ],
+      "learning_outcomes": [
+        "Identify AI risks",
+        "recognize sensitive data",
+        "design human-review checkpoints",
+        "document limitations"
+      ],
+      "duration_hours": 10,
+      "duration_weeks": 2,
+      "delivery_mode": [
+        "online",
+        "in_person"
+      ],
+      "language": [
+        "English",
+        "Arabic"
+      ],
+      "sample_fee_egp": 2200,
+      "fee_status": "synthetic_example_not_academy_price",
+      "level": "beginner",
+      "assessment": [
+        "practical exercises",
+        "final mini-project or assessment"
+      ],
+      "source_status": "synthetic"
+    }
+  ]
+}

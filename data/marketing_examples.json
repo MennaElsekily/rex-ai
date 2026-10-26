@@ -1,0 +1,128 @@
+{
+  "_metadata": {
+    "dataset_type": "synthetic_development_data",
+    "warning": "Draft copy only; requires verification and human approval before publication."
+  },
+  "examples": [
+    {
+      "example_id": "SYN-M001",
+      "course_id": "SYN-C001",
+      "channel": "LinkedIn",
+      "language": "English",
+      "audience": "Business professionals",
+      "objective": "Awareness",
+      "draft": "Explore practical ways to use generative AI for everyday work. Sample copy; verify all course details before publication.",
+      "cta": "Learn more",
+      "approval_status": "draft_not_approved",
+      "source_status": "synthetic"
+    },
+    {
+      "example_id": "SYN-M002",
+      "course_id": "SYN-C003",
+      "channel": "Facebook",
+      "language": "Arabic",
+      "audience": "Early-career professionals",
+      "objective": "Lead generation",
+      "draft": "نموذج تجريبي: تعرّف على كيفية تحويل البيانات إلى لوحات معلومات واضحة. يجب مراجعة تفاصيل الدورة قبل النشر.",
+      "cta": "استفسر عن الدورة",
+      "approval_status": "draft_not_approved",
+      "source_status": "synthetic"
+    },
+    {
+      "example_id": "SYN-M003",
+      "course_id": "SYN-C005",
+      "channel": "Instagram",
+      "language": "English",
+      "audience": "Beginners learning programming",
+      "objective": "Engagement",
+      "draft": "Build your programming foundations with Python through practical exercises. Sample campaign copy; verify availability before use.",
+      "cta": "Explore the course",
+      "approval_status": "draft_not_approved",
+      "source_status": "synthetic"
+    },
+    {
+      "example_id": "SYN-M004",
+      "course_id": "SYN-C007",
+      "channel": "Email",
+      "language": "English",
+      "audience": "Training managers",
+      "objective": "Consideration",
+      "draft": "Clear learning outcomes and aligned assessment help improve training design. Sample message; confirm program details before sending.",
+      "cta": "Request the outline",
+      "approval_status": "draft_not_approved",
+      "source_status": "synthetic"
+    },
+    {
+      "example_id": "SYN-M005",
+      "course_id": "SYN-C009",
+      "channel": "WhatsApp",
+      "language": "Arabic",
+      "audience": "Organization administrators",
+      "objective": "Awareness",
+      "draft": "نموذج توعوي تجريبي حول أساسيات الأمن السيبراني. يرجى تأكيد تفاصيل البرنامج قبل الإرسال.",
+      "cta": "اطلب التفاصيل",
+      "approval_status": "draft_not_approved",
+      "source_status": "synthetic"
+    },
+    {
+      "example_id": "SYN-M006",
+      "course_id": "SYN-C011",
+      "channel": "LinkedIn",
+      "language": "English",
+      "audience": "Junior analysts",
+      "objective": "Lead generation",
+      "draft": "Move from raw tables to clearer insights with data-cleaning and analysis practice. Fictional sample offer; verify details.",
+      "cta": "Request details",
+      "approval_status": "draft_not_approved",
+      "source_status": "synthetic"
+    },
+    {
+      "example_id": "SYN-M007",
+      "course_id": "SYN-C013",
+      "channel": "Facebook",
+      "language": "Arabic",
+      "audience": "New workplace trainers",
+      "objective": "Awareness",
+      "draft": "هل تقدّم تدريبًا للآخرين؟ تعرّف على تخطيط الجلسات وإشراك المتعلمين. محتوى تجريبي يحتاج إلى اعتماد.",
+      "cta": "تعرّف على البرنامج",
+      "approval_status": "draft_not_approved",
+      "source_status": "synthetic"
+    },
+    {
+      "example_id": "SYN-M008",
+      "course_id": "SYN-C015",
+      "channel": "Email",
+      "language": "English",
+      "audience": "Small-business owners",
+      "objective": "Consideration",
+      "draft": "Plan digital campaigns with a clearer audience, objective, and measurement approach. Verify details before use.",
+      "cta": "View course details",
+      "approval_status": "draft_not_approved",
+      "source_status": "synthetic"
+    },
+    {
+      "example_id": "SYN-M009",
+      "course_id": "SYN-C017",
+      "channel": "LinkedIn",
+      "language": "English",
+      "audience": "Managers and technology teams",
+      "objective": "Engagement",
+      "draft": "Responsible AI adoption involves privacy, bias, and human review. Sample learning concept only.",
+      "cta": "Discuss team training",
+      "approval_status": "draft_not_approved",
+      "source_status": "synthetic"
+    },
+    {
+      "example_id": "SYN-M010",
+      "course_id": "SYN-C019",
+      "channel": "Instagram",
+      "language": "Arabic",
+      "audience": "Students and early-career professionals",
+      "objective": "Engagement",
+      "draft": "طوّر مهارات العرض والتواصل المهني من خلال التدريب العملي. نموذج تجريبي وليس إعلانًا عن دورة مؤكدة.",
+      "cta": "اعرف المزيد",
+      "approval_status": "draft_not_approved",
+      "source_status": "synthetic"
+    }
+  ]
+}

@@ -2,3 +2,6 @@
 ollama
 streamlit
 pytest
+langchain
+langgraph
+langchain-ollama
