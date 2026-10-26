@@ -1,4 +1,6 @@
 
+import uuid
+
 import streamlit as st
 
 from agents.register_agents import create_orchestrator
@@ -23,14 +25,21 @@ def get_orchestrator():
 
 orchestrator = get_orchestrator()
 
+# One conversation_id per browser session, so REX Assistant's
+# conversation memory (profile, consent, language) persists across
+# messages within this session but never leaks into another session.
+if "conversation_id" not in st.session_state:
+    st.session_state.conversation_id = str(uuid.uuid4())
+
 
 if "test_messages" not in st.session_state:
     st.session_state.test_messages = [
         {
             "role": "assistant",
             "content": (
-                "Hello! Ask me to find a curriculum example or "
-                "generate a new curriculum draft."
+                "Hello! Ask me to find a curriculum example, generate a "
+                "new curriculum draft, recommend a course, or search "
+                "for education tenders in Egypt or Saudi Arabia."
             ),
         }
     ]
@@ -183,7 +192,12 @@ if user_input:
 
     with st.chat_message("assistant"):
         with st.spinner("Orchestrator is processing your request..."):
-            response = orchestrator.handle_request(user_input)
+            response = orchestrator.handle_request(
+                user_input,
+                context={
+                    "conversation_id": st.session_state.conversation_id
+                },
+            )
 
             if response.get("status") != "success":
                 answer = (
@@ -195,52 +209,159 @@ if user_input:
             else:
                 results = response.get("result") or []
 
-                agent_results = [
+                successful_results = [
                     item
                     for item in results
-                    if item.get("agent_name") == "curriculum_research"
-                    and item.get("status") == "success"
+                    if item.get("status") == "success"
                 ]
 
-                if not agent_results:
+                if not successful_results:
                     answer = (
                         "The orchestrator did not return a successful "
-                        "curriculum research result. Check agent registration "
-                        "and the orchestrator response."
+                        "result. Check agent registration and the "
+                        "orchestrator response."
                     )
                     st.warning(answer)
 
                 else:
-                    curriculum_result = (
-                        agent_results[0].get("result") or {}
-                    )
+                    answer_parts = []
 
-                    answer = curriculum_result.get(
-                        "message",
-                        "Curriculum request completed.",
-                    )
+                    for item in successful_results:
+                        agent_name = item.get("agent_name")
+                        agent_result = item.get("result") or {}
 
-                    curricula = curriculum_result.get("curricula", [])
+                        if agent_name == "curriculum_research":
+                            message = agent_result.get(
+                                "message",
+                                "Curriculum request completed.",
+                            )
 
-                    if curricula:
-                        formatted_curricula = [
-                            format_curriculum(curriculum)
-                            for curriculum in curricula
-                        ]
+                            curricula = agent_result.get("curricula", [])
 
-                        answer += "\n\n" + "\n\n---\n\n".join(
-                            formatted_curricula
-                        )
-                    else:
-                        answer += (
-                            "\n\nNo matching curriculum examples "
-                            "were found."
-                        )
+                            if curricula:
+                                formatted_curricula = [
+                                    format_curriculum(curriculum)
+                                    for curriculum in curricula
+                                ]
 
-                    notice = curriculum_result.get("notice")
-                    if notice and notice not in answer:
-                        answer += f"\n\n> {notice}"
+                                message += "\n\n" + "\n\n---\n\n".join(
+                                    formatted_curricula
+                                )
+                            else:
+                                message += (
+                                    "\n\nNo matching curriculum examples "
+                                    "were found."
+                                )
 
+                            notice = agent_result.get("notice")
+                            if notice and notice not in message:
+                                message += f"\n\n> {notice}"
+
+                            answer_parts.append(message)
+
+                        elif agent_name == "rex_assistant":
+                            answer_parts.append(
+                                agent_result.get(
+                                    "answer", "No answer returned."
+                                )
+                            )
+
+                        elif agent_name == "rfp_research":
+                            lines = [agent_result.get("message", "")]
+
+                            # Show exactly which API(s) were used and
+                            # whether each actually succeeded -- an API
+                            # error/unavailability must never look like
+                            # "zero tenders found."
+                            api_status_labels = {
+                                "success": "✅ Success",
+                                "unavailable": "⚠️ No API available",
+                                "awaiting_credentials": "🔑 Awaiting credentials",
+                                "error": "❌ Request failed",
+                            }
+                            api_results = agent_result.get("api_results", [])
+                            if api_results:
+                                lines.append("\n**API sources used:**")
+                                for api_result in api_results:
+                                    status = api_result.get("status")
+                                    lines.append(
+                                        f"- {api_result.get('source_name')}: "
+                                        f"{api_status_labels.get(status, status)} "
+                                        f"({api_result.get('raw_record_count', 0)} raw record(s)) "
+                                        f"— {api_result.get('message', '')}"
+                                    )
+                                lines.append("")
+
+                            # review_status describes REVIEW PRIORITY
+                            # only (Egypt vs Saudi business rule) -- it
+                            # never implies a tender is verified open
+                            # or that the academy qualifies.
+                            review_labels = {
+                                "flagged_for_immediate_review": (
+                                    "⚑ Flagged for immediate review (Egypt)"
+                                ),
+                                "monitored_pipeline": (
+                                    "Monitored pipeline (Saudi Arabia)"
+                                ),
+                            }
+                            qualification_labels = {
+                                "qualified": "✅ Qualified",
+                                "not_qualified": "❌ Not qualified",
+                                "unknown": "❓ Unknown (insufficient evidence)",
+                            }
+
+                            for opportunity in agent_result.get(
+                                "opportunities", []
+                            ):
+                                source_url = opportunity.get("source_url", "")
+                                title = opportunity.get("title") or opportunity.get("source_id", "")
+                                if source_url:
+                                    lines.append(f"- **[{title}]({source_url})**  ")
+                                else:
+                                    lines.append(f"- **{title}**  ")
+                                lines.append(
+                                    f"  ({opportunity.get('country')} — "
+                                    f"{review_labels.get(opportunity.get('review_status'), opportunity.get('review_status'))})"
+                                )
+                                if opportunity.get("reference_number"):
+                                    lines.append(
+                                        f"  Reference: {opportunity['reference_number']}"
+                                    )
+                                if opportunity.get("organization"):
+                                    lines.append(
+                                        f"  Organization: {opportunity['organization']}"
+                                    )
+                                if opportunity.get("deadline"):
+                                    lines.append(
+                                        f"  Deadline: {opportunity['deadline']}"
+                                    )
+                                lines.append(
+                                    f"  Source: {opportunity.get('source_name', 'unknown')} "
+                                    f"(verification: {opportunity.get('verification_status', 'unknown')})"
+                                )
+                                lines.append(
+                                    f"  {opportunity.get('ai_summary', '')}"
+                                )
+                                qualification_status = opportunity.get(
+                                    "qualification_status", "unknown"
+                                )
+                                lines.append(
+                                    f"  Qualification: "
+                                    f"{qualification_labels.get(qualification_status, qualification_status)}"
+                                    f" — {opportunity.get('qualification_reason', '')}"
+                                )
+                                missing = opportunity.get("missing_information")
+                                if missing:
+                                    lines.append(
+                                        f"  Missing/unverified: {', '.join(missing)}"
+                                    )
+
+                            answer_parts.append("\n".join(lines))
+
+                        else:
+                            answer_parts.append(str(agent_result))
+
+                    answer = "\n\n---\n\n".join(answer_parts)
                     st.markdown(answer)
 
     # Store the complete formatted response so it remains visible

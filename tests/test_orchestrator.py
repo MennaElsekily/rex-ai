@@ -82,3 +82,48 @@ def test_agent_exception_is_handled():
 
     assert response["status"] == "error"
     assert "Simulated failure" in response["error_message"]
+
+
+def test_previous_results_are_passed_to_next_agent():
+    """
+    Confirms the shared-workflow-state mechanism: when a plan runs
+    multiple agents, each later agent's context must include every
+    earlier agent's result via context["previous_results"].
+    """
+    router = Orchestrator()
+    captured_contexts = []
+
+    def curriculum_agent(request):
+        return {
+            "request_id": request["request_id"],
+            "agent_name": "curriculum_research",
+            "status": "success",
+            "result": {"course": "AI Foundations"},
+            "error_message": None,
+        }
+
+    def marketing_agent(request):
+        captured_contexts.append(request["context"])
+        return {
+            "request_id": request["request_id"],
+            "agent_name": "marketing",
+            "status": "success",
+            "result": "Campaign created",
+            "error_message": None,
+        }
+
+    router.register_agent("curriculum_research", curriculum_agent)
+    router.register_agent("marketing", marketing_agent)
+
+    response = router.handle_request(
+        "Create a curriculum and marketing campaign",
+        request_id="test-006",
+    )
+
+    assert response["status"] == "success"
+    assert len(captured_contexts) == 1
+
+    previous_results = captured_contexts[0]["previous_results"]
+    assert len(previous_results) == 1
+    assert previous_results[0]["agent_name"] == "curriculum_research"
+    assert previous_results[0]["result"] == {"course": "AI Foundations"}

@@ -1,15 +1,12 @@
 
-import os
-import re
 from typing import Any, Callable
 from uuid import uuid4
 
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_ollama import ChatOllama
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
 
+# Common response format from docs/agent_interfaces.md
 AgentHandler = Callable[[dict[str, Any]], dict[str, Any]]
 
 
@@ -22,8 +19,12 @@ class OrchestratorState(TypedDict, total=False):
 
 
 class Orchestrator:
-    """Route requests and coordinate specialist agents using LangChain
-    and LangGraph.
+    """
+    Agent 6: routes Arabic and English requests to specialist agents.
+
+    Language detection and routing use deterministic Python rules.
+    RAG is not implemented here; specialist agents can call the
+    team's shared RAG component when it becomes available.
     """
 
     AGENT_NAMES = {
@@ -34,50 +35,12 @@ class Orchestrator:
         "marketing",
     }
 
-    def __init__(self, model_name: str | None = None) -> None:
+    def __init__(self) -> None:
         self.agents: dict[str, AgentHandler] = {}
-
-        model_name = model_name or os.getenv(
-            "OLLAMA_MODEL", "llama3.2:1b"
-        )
-
-        self.routing_prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    "You are a request router for an educational "
-                    "multi-agent system.\n"
-                    "Choose only from these agent names:\n"
-                    "- rex_assistant: course recommendations\n"
-                    "- rfp_research: educational tenders, RFPs, RFQs\n"
-                    "- curriculum_research: curriculum creation, "
-                    "curriculum research, learning outcomes, "
-                    "accreditation alignment\n"
-                    "- document_generation: educational documents, "
-                    "course proposals, guides, PDFs, question banks\n"
-                    "- marketing: educational marketing, campaigns, "
-                    "promotional and social media content\n\n"
-                    "Return only the agent name. For a request that "
-                    "clearly requires BOTH curriculum creation/research "
-                    "and marketing, return exactly:\n"
-                    "curriculum_research,marketing\n"
-                    "For an unclear or unrelated request, return exactly:\n"
-                    "none\n"
-                    "Never invent agent names. Do not include explanations.",
-                ),
-                ("human", "{user_input}"),
-            ]
-        )
-
-        self.router = self.routing_prompt | ChatOllama(
-            model=model_name,
-            temperature=0,
-        )
-
         graph = StateGraph(OrchestratorState)
+
         graph.add_node("plan", self._plan_node)
         graph.add_node("execute", self._execute_node)
-
         graph.add_edge(START, "plan")
         graph.add_edge("plan", "execute")
         graph.add_conditional_edges(
@@ -90,14 +53,20 @@ class Orchestrator:
 
     @staticmethod
     def detect_language(text: str) -> str:
-        """Return 'ar' for Arabic text and 'en' otherwise."""
-        if any("\u0600" <= char <= "\u06FF" for char in text):
-            return "ar"
+        """
+        Detect Arabic if Arabic-script characters are present.
+        Otherwise default to English.
+
+        Returns:
+            "ar" for Arabic, "en" for English.
+        """
+        for character in text:
+            if "\u0600" <= character <= "\u06FF":
+                return "ar"
+
         return "en"
 
-    def register_agent(
-        self, name: str, handler: AgentHandler
-    ) -> None:
+    def register_agent(self, name: str, handler: AgentHandler) -> None:
         """Register an implemented specialist agent."""
         if name not in self.AGENT_NAMES:
             raise ValueError(f"Unknown specialist agent: {name}")
@@ -110,7 +79,7 @@ class Orchestrator:
         context: dict[str, Any] | None = None,
         request_id: str | None = None,
     ) -> dict[str, Any]:
-        """Classify, route, execute, and combine specialist responses."""
+        """Detect the language, route the request, and return a response."""
         request_id = request_id or str(uuid4())
         user_input = user_input.strip()
 
@@ -147,17 +116,9 @@ class Orchestrator:
                 request_id, f"Orchestrator error: {error}"
             )
 
-    def _plan_node(
-        self, state: OrchestratorState
-    ) -> dict[str, Any]:
-        """Use the LangChain router, with deterministic fallback."""
-        user_input = state["request"]["user_input"]
-
-        try:
-            plan = self._classify_request(user_input)
-        except Exception:
-            # Keep routing available if Ollama is unavailable.
-            plan = self._make_plan(user_input)
+    def _plan_node(self, state: OrchestratorState) -> dict[str, Any]:
+        request = state["request"]
+        plan = self._make_plan(request["user_input"])
 
         return {
             "plan": plan,
@@ -165,109 +126,145 @@ class Orchestrator:
             "current_index": 0,
         }
 
-    def _classify_request(self, text: str) -> list[str]:
-        """Classify a request and validate the selected agent names."""
-        result = self.router.invoke({"user_input": text})
-        output = str(result.content).strip().casefold()
-
-        if output == "none":
-            # Use known keyword rules as a secondary attempt.
-            return self._make_plan(text)
-
-        candidates = [
-            item.strip()
-            for item in re.split(r"[,;\n]+", output)
-            if item.strip()
-        ]
-
-        # Ignore anything the model returns that is not an allowed agent.
-        selected = [
-            item for item in candidates
-            if item in self.AGENT_NAMES
-        ]
-
-        # Only allow the explicitly supported multi-agent workflow.
-        if set(selected) == {"curriculum_research", "marketing"}:
-            return ["curriculum_research", "marketing"]
-
-        if selected:
-            return [selected[0]]
-
-        return self._make_plan(text)
-
     def _make_plan(self, text: str) -> list[str]:
-        """Deterministic fallback for common English and Arabic requests."""
+        """
+        Route Arabic or English requests using keywords.
+
+        Explicit multi-agent workflows are checked before individual
+        agent routes. This is rule-based routing, not semantic
+        understanding by an LLM.
+        """
         text = text.casefold()
 
+        # Multi-agent workflow: curriculum followed by marketing.
         curriculum_terms = (
-            "curriculum", "course outline", "syllabus",
-            "منهج", "منهاج", "مخرجات التعلم", "خطة دراسية",
+            "curriculum",
+            "course outline",
+            "syllabus",
+            "منهج",
+            "منهاج",
+            "مخرجات التعلم",
+            "خطة دراسية",
         )
-
         marketing_terms = (
-            "marketing", "campaign", "social media",
-            "advertisement", "advertising", "linkedin post",
-            "promotional", "تسويق", "حملة تسويقية",
-            "وسائل التواصل الاجتماعي", "إعلان", "اعلان",
+            "marketing",
+            "campaign",
+            "social media",
+            "advertisement",
+            "advertising",
+            "linkedin post",
+            "promotional",
+            "تسويق",
+            "حملة تسويقية",
+            "وسائل التواصل الاجتماعي",
+            "إعلان",
+            "اعلان",
         )
 
-        # Explicit multi-agent workflow.
         if (
             any(term in text for term in curriculum_terms)
             and any(term in text for term in marketing_terms)
         ):
             return ["curriculum_research", "marketing"]
 
-        # Agent 2: tender and RFP research.
+        # Agent 2: RFP and tender research.
         if any(term in text for term in (
-            "tender", "tenders", "rfp", "rfq",
-            "request for proposal", "request for quotation",
-            "مناقصة", "مناقصات", "مناقصه", "عطاء", "عطاءات",
-            "طلب تقديم عروض", "طلب عروض أسعار", "طلب عروض اسعار",
+            "tender",
+            "tenders",
+            "rfp",
+            "rfq",
+            "request for proposal",
+            "request for quotation",
+            "مناقصة",
+            "مناقصات",
+            "مناقصه",
+            "مناقصات تعليمية",
+            "عطاء",
+            "عطاءات",
+            "طلب تقديم عروض",
+            "طلب عروض أسعار",
+            "طلب عروض اسعار",
         )):
             return ["rfp_research"]
 
-        # Agent 3: curriculum research.
+        # Agent 3: curriculum research and accreditation alignment.
         if any(term in text for term in curriculum_terms + (
-            "learning outcomes", "accreditation",
-            "learning objectives", "training plan",
-            "أهداف التعلم", "الأهداف التعليمية", "اعتماد",
-            "الاعتماد الأكاديمي", "الاعتماد الاكاديمي",
-            "تصميم منهج", "تصميم منهج دراسي", "منهج تدريبي",
+            "learning outcomes",
+            "accreditation",
+            "learning objectives",
+            "training plan",
+            "أهداف التعلم",
+            "الأهداف التعليمية",
+            "اعتماد",
+            "الاعتماد الأكاديمي",
+            "الاعتماد الاكاديمي",
+            "تصميم منهج",
+            "تصميم منهج دراسي",
+            "منهج تدريبي",
         )):
             return ["curriculum_research"]
 
-        # Agent 5: marketing.
+        # Agent 5: educational marketing.
         if any(term in text for term in marketing_terms):
             return ["marketing"]
 
-        # Agent 4: document generation.
+        # Agent 4: educational document generation.
         if any(term in text for term in (
-            "generate a document", "create a document",
-            "make a pdf", "participant guide", "instructor guide",
-            "question bank", "proposal document", "create a proposal",
-            "أنشئ مستند", "انشئ مستند", "إنشاء مستند",
-            "إنشاء ملف pdf", "ملف pdf", "دليل المتدرب",
-            "دليل المدرب", "بنك أسئلة", "بنك اسئلة",
-            "إنشاء مقترح", "إنشاء عرض", "إعداد وثيقة",
+            "generate a document",
+            "create a document",
+            "make a pdf",
+            "participant guide",
+            "instructor guide",
+            "question bank",
+            "proposal document",
+            "create a proposal",
+            "أنشئ مستند",
+            "انشئ مستند",
+            "إنشاء مستند",
+            "إنشاء ملف pdf",
+            "ملف pdf",
+            "دليل المتدرب",
+            "دليل المدرب",
+            "بنك أسئلة",
+            "بنك اسئلة",
+            "إنشاء مقترح",
+            "إنشاء عرض",
+            "إعداد وثيقة",
         )):
             return ["document_generation"]
 
-        # Agent 1: course recommendations.
+        # Agent 1: REX Assistant and course recommendations.
         if any(term in text for term in (
-            "recommend a course", "recommend courses",
-            "which course", "course recommendation",
-            "course recommendations", "what course should",
-            "find me a course", "suggest a course", "training course",
-            "courses for beginners", "رشح لي دورة", "رشح دورة",
-            "رشح لي كورس", "اقترح دورة", "اقترح كورس",
-            "أريد دورة", "اريد دورة", "أريد كورس", "اريد كورس",
-            "الدورات المناسبة", "دورات للمبتدئين", "دورات تدريبية",
-            "ما هي الدورات", "ماهي الدورات",
-            "تعلم البرمجة", "تعلم تحليل البيانات",
+            "recommend a course",
+            "recommend courses",
+            "which course",
+            "course recommendation",
+            "course recommendations",
+            "what course should",
+            "find me a course",
+            "suggest a course",
+            "training course",
+            "courses for beginners",
+            "رشح لي دورة",
+            "رشح دورة",
+            "رشح لي كورس",
+            "اقترح دورة",
+            "اقترح كورس",
+            "أريد دورة",
+            "اريد دورة",
+            "أريد كورس",
+            "اريد كورس",
+            "الدورات المناسبة",
+            "دورات للمبتدئين",
+            "دورات تدريبية",
+            "ما هي الدورات",
+            "ماهي الدورات",
+            "تعلم البرمجة",
+            "تعلم تحليل البيانات",
         )):
             return ["rex_assistant"]
 
+        # Unknown requests are not sent to an arbitrary agent.
         return []
 
     def _execute_node(
@@ -293,6 +290,7 @@ class Orchestrator:
                     "أو التسويق."
                 ),
             }]
+
             return {
                 "results": results,
                 "current_index": index,
@@ -328,7 +326,10 @@ class Orchestrator:
                 "context": {
                     **request.get("context", {}),
                     "language": request.get("language", "en"),
-                    "previous_results": results,
+                    # A snapshot, not a live reference: results keeps
+                    # growing after this call returns, and an agent
+                    # must only see what ran before it.
+                    "previous_results": list(results),
                 },
             }
 
@@ -397,6 +398,7 @@ class Orchestrator:
     def _next_step(self, state: OrchestratorState) -> str:
         if state.get("current_index", 0) < len(state.get("plan", [])):
             return "execute"
+
         return "finish"
 
     def _error_response(

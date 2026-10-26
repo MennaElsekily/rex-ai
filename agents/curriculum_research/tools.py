@@ -1,27 +1,17 @@
 
 from typing import Any
 
-from langchain_core.tools import tool
-
 from agents.curriculum_research.data import CurriculumData
 
 
 class CurriculumTools:
-    """LangChain tools for searching and inspecting curriculum examples."""
+    """Tools for searching and inspecting curriculum examples."""
 
     def __init__(self, data: CurriculumData | None = None):
         self.data = data or CurriculumData()
 
-        # Expose the operations as actual LangChain tools.
-        self.search_examples_tool = tool(
-            self.search_examples
-        )
-        self.get_curriculum_details_tool = tool(
-            self.get_curriculum_details
-        )
-
     def search_examples(self, keyword: str) -> dict[str, Any]:
-        """Search synthetic curriculum examples by keyword."""
+        """Search curriculum examples by keyword."""
 
         try:
             matches = self.data.search(keyword)
@@ -69,11 +59,3 @@ class CurriculumTools:
                 f"No curriculum example found with ID: {example_id}"
             ),
         }
-
-    def get_langchain_tools(self) -> list:
-        """Return the available operations as LangChain tools."""
-
-        return [
-            self.search_examples_tool,
-            self.get_curriculum_details_tool,
-        ]

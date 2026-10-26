@@ -5,7 +5,7 @@ from typing import Any
 
 
 class CurriculumData:
-    """Loads, validates, and searches curriculum example data."""
+    """Loads and provides access to curriculum example data."""
 
     def __init__(self, data_path: str | Path | None = None):
         project_root = Path(__file__).resolve().parents[2]
@@ -19,7 +19,7 @@ class CurriculumData:
         self.records = self._load_data()
 
     def _load_data(self) -> list[dict[str, Any]]:
-        """Load and validate curriculum records from JSON."""
+        """Load curriculum records from the JSON file."""
 
         if not self.data_path.exists():
             raise FileNotFoundError(
@@ -32,10 +32,7 @@ class CurriculumData:
         if isinstance(data, list):
             records = data
         elif isinstance(data, dict):
-            records = data.get(
-                "curricula",
-                data.get("examples", []),
-            )
+            records = data.get("curricula", data.get("examples", []))
         else:
             raise ValueError(
                 "Curriculum JSON must contain a list or an object."
@@ -56,35 +53,11 @@ class CurriculumData:
     def get_all(self) -> list[dict[str, Any]]:
         """Return all loaded curriculum examples."""
 
-        # Copy the list so callers cannot modify the stored list itself.
         return self.records.copy()
 
-    @staticmethod
-    def _to_searchable_text(value: Any) -> str:
-        """Convert nested JSON content into searchable text."""
-
-        if isinstance(value, dict):
-            return " ".join(
-                CurriculumData._to_searchable_text(item)
-                for item in value.values()
-            )
-
-        if isinstance(value, list):
-            return " ".join(
-                CurriculumData._to_searchable_text(item)
-                for item in value
-            )
-
-        if value is None:
-            return ""
-
-        return str(value)
-
+    
     def search(self, keyword: str) -> list[dict[str, Any]]:
-        """Search curriculum examples across their content."""
-
-        if not isinstance(keyword, str):
-            raise ValueError("Search keyword must be a string.")
+        """Search relevant curriculum fields by keyword."""
 
         keyword = keyword.strip().casefold()
 
@@ -94,7 +67,21 @@ class CurriculumData:
         matches = []
 
         for record in self.records:
-            searchable_text = self._to_searchable_text(record).casefold()
+            title = str(record.get("title", "")).casefold()
+            audience = str(record.get("target_audience", "")).casefold()
+
+            outcomes = " ".join(
+                str(item)
+                for item in record.get("learning_outcomes", [])
+            ).casefold()
+
+            modules = " ".join(
+                str(module.get("title", ""))
+                for module in record.get("modules", [])
+                if isinstance(module, dict)
+            ).casefold()
+
+            searchable_text = f"{title} {audience} {outcomes} {modules}"
 
             if keyword in searchable_text:
                 matches.append(record)

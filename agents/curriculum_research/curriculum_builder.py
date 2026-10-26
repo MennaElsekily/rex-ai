@@ -1,78 +1,10 @@
 
-import json
-from typing import Any, TypedDict
+from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
-from langchain_core.output_parsers import PydanticOutputParser
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_ollama import ChatOllama
-from langgraph.graph import END, START, StateGraph
-
-
-# ---------------------------------------------------------
-# 1. Curriculum output schemas
-# ---------------------------------------------------------
-
-class CurriculumModule(BaseModel):
-    module_number: int = Field(ge=1, le=4)
-    title: str
-    hours: int = Field(ge=0)
-    topics: list[str]
-    practical_exercises: list[str]
-
-
-class Assessment(BaseModel):
-    type: str
-    description: str
-
-
-class CapstoneProject(BaseModel):
-    title: str
-    description: str
-
-
-
-class CurriculumDraft(BaseModel):
-    title: str
-    course_objectives: list[str]
-    target_audience: str
-    prerequisites: list[str]
-    learning_outcomes: list[str]
-    modules: list[CurriculumModule]
-
-    # Small models may omit these fields.
-    practical_exercises: list[str] = Field(default_factory=list)
-    assessments: list[Assessment] = Field(default_factory=list)
-    capstone_project: CapstoneProject = Field(
-        default_factory=lambda: CapstoneProject(
-            title="Final Practical Project",
-            description=(
-                "Apply the skills learned in the course "
-                "to complete a practical project."
-            ),
-        )
-    )
-
-
-
-# ---------------------------------------------------------
-# 2. LangGraph state
-# ---------------------------------------------------------
-
-class CurriculumBuilderState(TypedDict, total=False):
-    topic: str
-    target_audience: str
-    training_hours: int
-    prerequisites: list[str]
-    curriculum: dict[str, Any]
-    error: str
-
-
-# ---------------------------------------------------------
-# 3. Curriculum builder
-# ---------------------------------------------------------
 
 class CurriculumBuilder:
+    """Build structured training curricula from user requirements."""
+
     REQUIRED_SECTIONS = [
         "course_objectives",
         "target_audience",
@@ -85,91 +17,6 @@ class CurriculumBuilder:
         "capstone_project",
     ]
 
-    def __init__(self):
-        # LangChain model connection to the local Ollama model.
-        self.model = ChatOllama(
-            model="llama3.2:1b",
-            temperature=0.2,
-            format="json",
-        )
-
-        # Parse and validate the model's curriculum response.
-        self.parser = PydanticOutputParser(
-            pydantic_object=CurriculumDraft
-        )
-
-        # Prompt used by the LangChain generation chain.
-        self.prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    """
-You are an educational curriculum designer.
-
-Create a useful, detailed curriculum based on the user's
-requirements.
-
-Requirements:
-- Return exactly four modules.
-- Include measurable course objectives and learning outcomes.
-- Include relevant topics and practical exercises.
-- Include assessments and a capstone project.
-- Adapt the content to the target audience and prerequisites.
-- Keep the curriculum relevant to the requested topic.
-- Do not invent accreditation, certification, or official approval.
-- Write all curriculum content in English.
-- The application will assign and validate module hours.
-
-Return ONLY one valid JSON object containing:
-- title: string
-- course_objectives: array of strings
-- target_audience: string
-- prerequisites: array of strings
-- learning_outcomes: array of strings
-- modules: array of exactly four objects, each containing:
-  module_number, title, hours, topics, practical_exercises
-- practical_exercises: array of strings
-- assessments: array of objects containing type and description
-- capstone_project: object containing title and description
-
-Return actual curriculum data, not a JSON schema.
-Do not include Markdown fences or explanations.
-"""
-                ),
-                (
-                    "human",
-                    """
-Topic: {topic}
-Target audience: {target_audience}
-Total training hours: {training_hours}
-Prerequisites: {prerequisites}
-
-Generate the curriculum draft as JSON.
-"""
-                ),
-            ]
-        )
-
-        # LangChain: prompt -> Ollama -> JSON text.
-        self.generation_chain = self.prompt | self.model
-
-        # LangGraph: define the curriculum generation workflow.
-        graph = StateGraph(CurriculumBuilderState)
-
-        graph.add_node(
-            "generate_curriculum",
-            self._generate_node,
-        )
-
-        graph.add_edge(START, "generate_curriculum")
-        graph.add_edge("generate_curriculum", END)
-
-        self.graph = graph.compile()
-
-    # -----------------------------------------------------
-    # 4. Public method
-    # -----------------------------------------------------
-
     def build_curriculum(
         self,
         topic: str,
@@ -177,192 +24,120 @@ Generate the curriculum draft as JSON.
         training_hours: int = 30,
         prerequisites: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Generate and validate a curriculum."""
+        """Create a structured curriculum draft."""
 
-        # Validate the input topic.
-        if not isinstance(topic, str) or not topic.strip():
-            raise ValueError("Topic cannot be empty.")
+        topic = topic.strip()
 
-        # Reject booleans because bool is a subclass of int.
-        if (
-            not isinstance(training_hours, int)
-            or isinstance(training_hours, bool)
-            or training_hours <= 0
-        ):
-            raise ValueError(
-                "Training hours must be a positive integer."
-            )
+        if not topic:
+            raise ValueError("The curriculum topic cannot be empty.")
 
-        if (
-            not isinstance(target_audience, str)
-            or not target_audience.strip()
-        ):
-            raise ValueError("Target audience cannot be empty.")
+        if training_hours <= 0:
+            raise ValueError("Training hours must be greater than zero.")
 
-        if prerequisites is None:
-            prerequisites = ["Basic computer skills"]
+        prerequisites = prerequisites or ["Basic computer skills"]
 
-        if not isinstance(prerequisites, list):
-            raise ValueError("Prerequisites must be a list.")
-
-        cleaned_prerequisites = []
-
-        for item in prerequisites:
-            if not isinstance(item, str) or not item.strip():
-                raise ValueError(
-                    "Each prerequisite must be a non-empty string."
-                )
-            cleaned_prerequisites.append(item.strip())
-
-        initial_state: CurriculumBuilderState = {
-            "topic": topic.strip(),
-            "target_audience": target_audience.strip(),
-            "training_hours": training_hours,
-            "prerequisites": cleaned_prerequisites,
-        }
-
-        # Execute the LangGraph workflow.
-        result = self.graph.invoke(initial_state)
-
-        if "error" in result:
-            raise RuntimeError(result["error"])
-
-        if "curriculum" not in result:
-            raise RuntimeError(
-                "Curriculum generation returned no curriculum."
-            )
-
-        return result["curriculum"]
-
-    # -----------------------------------------------------
-    # 5. LangGraph generation node
-    # -----------------------------------------------------
-
-    def _generate_node(
-        self,
-        state: CurriculumBuilderState,
-    ) -> dict[str, Any]:
-        """Generate, parse, and validate the curriculum."""
-
-        response = self.generation_chain.invoke(
-            {
-                "topic": state["topic"],
-                "target_audience": state["target_audience"],
-                "training_hours": state["training_hours"],
-                "prerequisites": state["prerequisites"],
-            }
-        )
-
-        # ChatOllama returns an AI message.
-        response_text = response.content
-
-        # Handle unexpected non-string output.
-        if not isinstance(response_text, str):
-            raise ValueError(
-                "The language model returned an invalid response."
-            )
-
-        # Remove Markdown fences if the model adds them anyway.
-        response_text = response_text.strip()
-
-        if response_text.startswith("```"):
-            lines = response_text.splitlines()
-
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-
-            response_text = "\n".join(lines).strip()
-
-        # Parse actual JSON data, not the JSON schema.
-        try:
-            raw_data = json.loads(response_text)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                "Ollama did not return valid JSON. "
-                "Try running the request again."
-            ) from exc
-
-        # Validate JSON against the expected Pydantic schema.
-        try:
-            draft = CurriculumDraft.model_validate(raw_data)
-        except ValidationError as exc:
-            raise ValueError(
-                "The generated curriculum does not match "
-                f"the required structure:\n{exc}"
-            ) from exc
-
-        curriculum = draft.model_dump()
-
-        # Exactly four modules are required.
-        if len(curriculum["modules"]) != 4:
-            raise ValueError(
-                "The generated curriculum must contain "
-                "exactly four modules."
-            )
-
-        # Assign module hours so the total exactly matches
-        # the requested training hours.
-        total_hours = state["training_hours"]
-        base_hours, remainder = divmod(total_hours, 4)
-
-        for index, module in enumerate(curriculum["modules"]):
-            module["module_number"] = index + 1
-
-            # Distribute remaining hours among the first modules.
-            module["hours"] = (
-                base_hours + (1 if index < remainder else 0)
-            )
-
-        # Ensure application inputs are authoritative.
-        curriculum["title"] = curriculum["title"].strip()
-        curriculum["target_audience"] = state["target_audience"]
-        curriculum["prerequisites"] = state["prerequisites"]
-        curriculum["training_hours"] = total_hours
-        curriculum["status"] = "draft"
-
-        # Combine module exercises and curriculum-level exercises.
-        all_exercises = list(curriculum["practical_exercises"])
-
-        for module in curriculum["modules"]:
-            all_exercises.extend(module["practical_exercises"])
-
-        # Remove duplicate exercises while preserving order.
-        curriculum["practical_exercises"] = list(
-            dict.fromkeys(all_exercises)
-        )
-
-        # Validate the final module-hour allocation.
-        allocated_hours = sum(
-            module["hours"] for module in curriculum["modules"]
-        )
-
-        if allocated_hours != total_hours:
-            raise ValueError(
-                "Module hours do not equal the requested "
-                "training hours."
-            )
-
-        # Validate all required sections.
-        missing_sections = [
-            section
-            for section in self.REQUIRED_SECTIONS
-            if section not in curriculum
+        # Divide the requested hours across four modules.
+        base_hours = training_hours // 4
+        remainder = training_hours % 4
+        module_hours = [
+            base_hours + (1 if i < remainder else 0)
+            for i in range(4)
         ]
 
-        if missing_sections:
-            raise ValueError(
-                "Missing required curriculum sections: "
-                + ", ".join(missing_sections)
-            )
+        modules = [
+            {
+                "module_number": 1,
+                "title": f"Introduction to {topic}",
+                "hours": module_hours[0],
+                "topics": [
+                    f"Fundamental concepts of {topic}",
+                    "Key terminology and applications",
+                ],
+                "practical_exercises": [
+                    f"Identify real-world applications of {topic}"
+                ],
+            },
+            {
+                "module_number": 2,
+                "title": f"Core Skills in {topic}",
+                "hours": module_hours[1],
+                "topics": [
+                    f"Essential methods and techniques in {topic}",
+                    "Tools and workflows",
+                ],
+                "practical_exercises": [
+                    f"Complete a guided exercise using {topic}"
+                ],
+            },
+            {
+                "module_number": 3,
+                "title": f"Applied {topic}",
+                "hours": module_hours[2],
+                "topics": [
+                    "Practical problem-solving",
+                    "Common challenges and good practices",
+                ],
+                "practical_exercises": [
+                    f"Solve a practical problem related to {topic}"
+                ],
+            },
+            {
+                "module_number": 4,
+                "title": f"{topic} Project",
+                "hours": module_hours[3],
+                "topics": [
+                    "Project planning",
+                    "Implementation and presentation",
+                ],
+                "practical_exercises": [
+                    f"Develop a small project demonstrating {topic}"
+                ],
+            },
+        ]
 
-        curriculum["notice"] = (
-            "This curriculum was AI-generated and requires "
-            "review by a qualified educational professional. "
-            "Accreditation, compliance, and official approval "
-            "have not been verified."
-        )
-
-        return {"curriculum": curriculum}
+        return {
+            "title": f"{topic} Training Curriculum",
+            "status": "draft",
+            "course_objectives": [
+                f"Understand the fundamental concepts of {topic}",
+                f"Apply relevant techniques to practical problems",
+                f"Demonstrate learning through a final project",
+            ],
+            "target_audience": target_audience,
+            "prerequisites": prerequisites,
+            "learning_outcomes": [
+                f"Explain the main concepts of {topic}",
+                f"Apply appropriate methods to a practical task",
+                f"Evaluate the results of work related to {topic}",
+                f"Present a completed project related to {topic}",
+            ],
+            "modules": modules,
+            "training_hours": training_hours,
+            "practical_exercises": [
+                exercise
+                for module in modules
+                for exercise in module["practical_exercises"]
+            ],
+            "assessments": [
+                {
+                    "type": "Module exercises",
+                    "description": "Assess practical skills throughout the course",
+                },
+                {
+                    "type": "Final assessment",
+                    "description": "Evaluate understanding of the course concepts",
+                },
+            ],
+            "capstone_project": {
+                "title": f"{topic} Capstone Project",
+                "description": (
+                    f"Complete and present a practical project demonstrating "
+                    f"the skills learned in {topic}."
+                ),
+            },
+            "notice": (
+                "This is an automatically generated draft. "
+                "Review the content and verify it against credible sources "
+                "and applicable standards before approval."
+            ),
+        }

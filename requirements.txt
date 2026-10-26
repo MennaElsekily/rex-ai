@@ -1,7 +1,29 @@
-
 ollama
 streamlit
 pytest
+
+# Agent orchestration and LLM integration
 langchain
+langchain-core
 langgraph
 langchain-ollama
+pydantic
+
+# Document parsing
+pypdf
+python-docx
+python-pptx
+
+# Vector database and embeddings
+chromadb
+sentence-transformers
+
+# MCP integration
+fastmcp
+mcp
+
+# Language detection and translation
+lingua-language-detector
+transformers
+sentencepiece
+sacremoses==0.2.0
