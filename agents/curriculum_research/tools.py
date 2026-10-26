@@ -14,12 +14,13 @@ class CurriculumTools:
         """Search curriculum examples by keyword."""
 
         try:
-            matches = self.data.search(keyword)
+            matches, match_type = self.data.search_with_match_type(keyword)
 
             return {
                 "status": "success",
                 "query": keyword,
                 "count": len(matches),
+                "match_type": match_type,
                 "results": matches,
                 "notice": (
                     "These are synthetic curriculum examples, "

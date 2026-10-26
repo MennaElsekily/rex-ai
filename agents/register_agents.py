@@ -2,7 +2,9 @@
 from typing import Any, Optional
 
 from agents.orchestrator import AgentHandler, Orchestrator
-from agents.curriculum_research import CurriculumResearchAgent
+from agents.curriculum_research.registration import (
+    register_curriculum_research,
+)
 from agents.conversation_store import ConversationStore
 from agents.rex_assistant import RexAssistantAgent
 from agents.rfp_research import RFPResearchAgent
@@ -91,15 +93,12 @@ def create_orchestrator(
 
     orchestrator = Orchestrator()
 
-    # Curriculum Research registration is preserved unchanged -- out of
-    # scope for this task.
-    curriculum_agent = CurriculumResearchAgent()
-    orchestrator.register_agent(
-        "curriculum_research",
-        curriculum_agent.process_request,
-    )
-
     store = conversation_store or ConversationStore()
+
+    # Curriculum Research keeps the latest draft of each conversation in
+    # the shared store (its own "curriculum_research" key) so users can
+    # refine it with follow-ups. See agents/curriculum_research/registration.py.
+    curriculum_agent = register_curriculum_research(orchestrator, store)
 
     rex_agent = rex_assistant_agent or RexAssistantAgent()
     orchestrator.register_agent(
@@ -119,6 +118,7 @@ def create_orchestrator(
     # Exposed for inspection/testing; the orchestrator's own code never
     # reads these attributes.
     orchestrator.conversation_store = store
+    orchestrator.curriculum_research_agent = curriculum_agent
     orchestrator.rex_assistant_agent = rex_agent
     orchestrator.rfp_research_agent = rfp_agent
 

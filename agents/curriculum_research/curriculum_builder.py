@@ -17,6 +17,20 @@ class CurriculumBuilder:
         "capstone_project",
     ]
 
+    # A generated draft always has this many modules.
+    MODULE_COUNT = 4
+
+    @staticmethod
+    def distribute_hours(total_hours: int, parts: int) -> list[int]:
+        """Split total_hours across `parts` modules as evenly as possible."""
+        base_hours = total_hours // parts
+        remainder = total_hours % parts
+
+        return [
+            base_hours + (1 if i < remainder else 0)
+            for i in range(parts)
+        ]
+
     def build_curriculum(
         self,
         topic: str,
@@ -36,13 +50,10 @@ class CurriculumBuilder:
 
         prerequisites = prerequisites or ["Basic computer skills"]
 
-        # Divide the requested hours across four modules.
-        base_hours = training_hours // 4
-        remainder = training_hours % 4
-        module_hours = [
-            base_hours + (1 if i < remainder else 0)
-            for i in range(4)
-        ]
+        # Divide the requested hours across the modules.
+        module_hours = self.distribute_hours(
+            training_hours, self.MODULE_COUNT
+        )
 
         modules = [
             {
