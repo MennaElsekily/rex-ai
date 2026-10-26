@@ -20,3 +20,6 @@ htmlcov/
 .vscode/
 .DS_Store
 Thumbs.db
+# Local SQLite runtime databases
+agents/conversation_state.sqlite3
+agents/rfp_research/rfp_opportunities.sqlite3
