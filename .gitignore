@@ -10,6 +10,7 @@ env/
 # Environment variables and secrets
 .env
 .env.*
+!.env.example
 
 # Test and coverage files
 .pytest_cache/
@@ -23,5 +24,18 @@ Thumbs.db
 # Local SQLite runtime databases
 agents/conversation_state.sqlite3
 agents/rfp_research/rfp_opportunities.sqlite3
+
+# Runtime data: admin-approved web research exported for indexing, and
+# learner details saved with consent
+knowledge_base/approved_research/
+knowledge_base/metadata/approved_research_*.json
+agents/rex_assistant/leads.jsonl
+
+# The academy's uploaded application documents (real company papers)
+agents/rfp_research/application_documents/
+
+# Agent 3: stored curricula (drafts, versions, review history) and their PDFs
+agents/curriculum_research/curricula.sqlite3
+agents/curriculum_research/documents/
 
 PROJECT_HANDOVER.md

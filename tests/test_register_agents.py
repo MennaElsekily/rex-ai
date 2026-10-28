@@ -16,6 +16,7 @@ from agents.register_agents import (
     make_rex_assistant_handler,
 )
 from agents.rfp_research import RFPResearchAgent
+from agents.rfp_research.opportunity_store import OpportunityStore
 
 
 def _rex_response(answer="ok", state=None, status="success"):
@@ -110,6 +111,9 @@ def test_adapter_extracts_and_passes_correct_arguments(tmp_path):
         "context": {"conversation_id": "conv-1", "language": "en"},
     })
 
+    # context["language"] is a per-message detection, not a preference:
+    # it must not be forwarded as preferred_language (that made short
+    # replies such as "ok" flip an Arabic conversation to English).
     fake_agent.handle_message.assert_called_once_with(
         "I want to learn AI",
         state=None,
@@ -124,6 +128,108 @@ def test_adapter_extracts_and_passes_correct_arguments(tmp_path):
         "result": {"answer": "hi"},
         "error_message": None,
     }
+
+
+def test_adapter_explicit_preferred_language_wins_over_detected(tmp_path):
+    store = ConversationStore(db_path=tmp_path / "conv.sqlite3")
+    fake_agent = MagicMock()
+    fake_agent.handle_message.return_value = _rex_response()
+
+    handler = make_rex_assistant_handler(fake_agent, store)
+    handler({
+        "request_id": "r1",
+        "user_input": "ما هي الدورات المتاحة؟",
+        "context": {
+            "conversation_id": "conv-1",
+            "language": "ar",
+            "preferred_language": "en",
+        },
+    })
+
+    assert fake_agent.handle_message.call_args.kwargs["preferred_language"] == "en"
+
+
+def test_arabizi_request_reaches_rex_with_original_text(tmp_path):
+    store = ConversationStore(db_path=tmp_path / "conv.sqlite3")
+    fake_agent = MagicMock()
+    fake_agent.handle_message.return_value = _rex_response(answer="ok")
+
+    orchestrator = create_orchestrator(
+        rex_assistant_agent=fake_agent,
+        conversation_store=store,
+        opportunity_store=OpportunityStore(db_path=tmp_path / "opps.sqlite3"),
+    )
+
+    text = "Ana 3ayez akhod course fel programming."
+    response = orchestrator.handle_request(
+        text, context={"conversation_id": "c1"}, request_id="r1"
+    )
+
+    assert response["status"] == "success"
+    assert response["result"][0]["agent_name"] == "rex_assistant"
+    args, kwargs = fake_agent.handle_message.call_args
+    assert args == (text,)  # not transliterated
+    # REX detects Arabizi itself (see test_rex_assistant.py); no
+    # preference is invented here.
+    assert kwargs["preferred_language"] is None
+
+
+def _orchestrator_with_fake_rex(tmp_path, fake_agent):
+    return create_orchestrator(
+        rex_assistant_agent=fake_agent,
+        conversation_store=ConversationStore(db_path=tmp_path / "conv.sqlite3"),
+        opportunity_store=OpportunityStore(db_path=tmp_path / "opps.sqlite3"),
+    )
+
+
+def test_followup_answer_without_keywords_reaches_rex(tmp_path):
+    """
+    Live-run regression: REX asks "what is your background?", and the
+    learner's answer has no routing keyword. It must still reach REX.
+    """
+    fake_agent = MagicMock()
+    fake_agent.handle_message.return_value = _rex_response(
+        answer="What is your background?", state={"profile": {}}
+    )
+    orchestrator = _orchestrator_with_fake_rex(tmp_path, fake_agent)
+    context = {"conversation_id": "c1"}
+
+    orchestrator.handle_request("Which course do you recommend?", context=context)
+    answer = orchestrator.handle_request(
+        "I work as an accountant and I'm a beginner", context=context
+    )
+    consent = orchestrator.handle_request("yes", context=context)
+
+    assert answer["status"] == "success"
+    assert answer["result"][0]["agent_name"] == "rex_assistant"
+    assert consent["result"][0]["agent_name"] == "rex_assistant"
+    assert fake_agent.handle_message.call_count == 3
+
+
+def test_keywordless_message_without_open_rex_session_is_not_claimed(tmp_path):
+    fake_agent = MagicMock()
+    orchestrator = _orchestrator_with_fake_rex(tmp_path, fake_agent)
+
+    response = orchestrator.handle_request(
+        "I work as an accountant", context={"conversation_id": "fresh"}
+    )
+
+    assert response["status"] == "error"
+    fake_agent.handle_message.assert_not_called()
+
+
+def test_curriculum_draft_edit_keeps_priority_over_open_rex_session(tmp_path):
+    fake_agent = MagicMock()
+    fake_agent.handle_message.return_value = _rex_response(state={"profile": {}})
+    orchestrator = _orchestrator_with_fake_rex(tmp_path, fake_agent)
+    context = {"conversation_id": "c1"}
+
+    orchestrator.handle_request("Create a curriculum about data analysis", context=context)
+    orchestrator.handle_request("Can you recommend a course?", context=context)
+    edit = orchestrator.handle_request("make it 40 hours", context=context)
+
+    assert edit["result"][0]["agent_name"] == "curriculum_research"
+    assert fake_agent.handle_message.call_count == 1
 
 
 def test_adapter_does_not_expose_internal_state_in_response(tmp_path):

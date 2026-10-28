@@ -34,8 +34,9 @@ def _raw_record(
     country="Egypt, Arab Republic of",
     notice_type="Invitation for Bids",
     deadline="2027-01-01T00:00:00Z",
+    noticedate="15-Jan-2024",
 ):
-    return {
+    record = {
         "id": id_,
         "notice_type": notice_type,
         "notice_status": "Published",
@@ -45,6 +46,9 @@ def _raw_record(
         "bid_description": "Digital skills training for public-sector staff.",
         "submission_deadline_date": deadline,
     }
+    if noticedate:
+        record["noticedate"] = noticedate
+    return record
 
 
 def test_world_bank_success_returns_normalized_records():
@@ -60,7 +64,45 @@ def test_world_bank_success_returns_normalized_records():
     assert record.source_id == "OP001"
     assert record.reference_number == "REF-001"
     assert record.deadline == "2027-01-01"
+    assert record.publication_date == "2024-01-15"
     assert record.source_name.startswith("World Bank")
+    # Not provided by this API for any record -- always flagged, never
+    # silently left as an empty list that looks like "confirmed none."
+    assert "eligibility" in record.missing_information
+    assert "available_documents" in record.missing_information
+
+
+def test_world_bank_prefers_contact_organization_over_project_name():
+    raw = _raw_record()
+    raw["contact_organization"] = "Egyptian Environmental Affairs Agency"
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_mock_response({"total": "1", "procnotices": [raw]}),
+    ):
+        result = query_world_bank_egypt("training")
+
+    assert result.records[0].organization == "Egyptian Environmental Affairs Agency"
+
+
+def test_world_bank_extracts_submission_url_and_instructions_when_present():
+    raw = _raw_record()
+    raw["contact_web_url"] = "www.example-ministry.gov.eg"
+    raw["contact_name"] = "Jane Doe"
+    raw["contact_email"] = "jane@example-ministry.gov.eg"
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_mock_response({"total": "1", "procnotices": [raw]}),
+    ):
+        result = query_world_bank_egypt("training")
+
+    record = result.records[0]
+    assert record.submission_url == "www.example-ministry.gov.eg"
+    assert "Jane Doe" in record.submission_instructions
+    assert "jane@example-ministry.gov.eg" in record.submission_instructions
+    assert "submission_url" not in record.missing_information
+    assert "submission_instructions" not in record.missing_information
 
 
 def test_world_bank_drops_non_egypt_records_despite_text_match():
@@ -95,7 +137,7 @@ def test_world_bank_excludes_historical_award_notices():
 
 
 def test_world_bank_flags_missing_fields_without_inventing_them():
-    raw = _raw_record(deadline=None)
+    raw = _raw_record(deadline=None, noticedate=None)
     raw["bid_reference_no"] = None
     raw["project_name"] = None
     payload = {"total": "1", "procnotices": [raw]}
@@ -107,8 +149,15 @@ def test_world_bank_flags_missing_fields_without_inventing_them():
     assert record.deadline is None
     assert record.organization is None
     assert record.reference_number is None
+    assert record.publication_date is None
+    assert record.submission_url is None
+    assert record.submission_instructions is None
+    # Every one of the nine required fields this API cannot supply is
+    # explicitly marked -- never silently invented or left ambiguous.
     assert set(record.missing_information) == {
         "deadline", "organization", "reference_number",
+        "publication_date", "submission_url", "submission_instructions",
+        "eligibility", "available_documents",
     }
 
 

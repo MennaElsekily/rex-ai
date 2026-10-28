@@ -1,9 +1,11 @@
-from agents.curriculum_research.agent import CurriculumResearchAgent
-from agents.curriculum_research.data import CurriculumData
-from agents.curriculum_research.tools import CurriculumTools
+"""
+Agent 3 -- Curriculum Research & Accreditation Alignment.
 
-__all__ = [
-    "CurriculumResearchAgent",
-    "CurriculumData",
-    "CurriculumTools",
-]
+Entry point: curriculum_agent.CurriculumAgent (registered by
+registration.register_curriculum_research). Design and decisions:
+docs/CURRICULUM_AGENT_ARCHITECTURE.md.
+"""
+
+from agents.curriculum_research.curriculum_agent import CurriculumAgent
+
+__all__ = ["CurriculumAgent"]

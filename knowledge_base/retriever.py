@@ -4,7 +4,7 @@ from typing import Any
 
 from sentence_transformers import CrossEncoder
 
-from knowledge_base.embedding_service import embed_texts
+from knowledge_base.embedding_service import DEFAULT_MODEL_NAME, embed_texts
 from knowledge_base.vector_store import VectorStore
 
 CROSS_ENCODER_MODEL = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -125,6 +125,19 @@ class Retriever:
 
         if not candidates:
             return []
+
+        # Vectors from a different embedding model are not comparable
+        # with this query vector: fail clearly instead of returning
+        # meaningless matches. (Chunks indexed before the model was
+        # recorded carry no model name and are accepted.)
+        indexed_models = {
+            (item.get("metadata") or {}).get("embedding_model") for item in candidates
+        } - {None}
+        if indexed_models - {DEFAULT_MODEL_NAME}:
+            raise ValueError(
+                f"The index was built with {sorted(indexed_models)}, but queries use "
+                f"{DEFAULT_MODEL_NAME}. Rebuild it: python -m knowledge_base.pipeline"
+            )
 
         # Remove duplicate and low-information chunks before reranking,
         # so repeated headings do not occupy the candidate pool.

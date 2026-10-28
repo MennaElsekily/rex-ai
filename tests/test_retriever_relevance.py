@@ -86,3 +86,30 @@ def test_threshold_can_be_disabled(mock_load_cross_encoder, _mock_embed):
     results = retriever.retrieve("What is the capital of France?")
 
     assert len(results) == 1
+
+
+@patch("knowledge_base.retriever.embed_texts", return_value=[[0.1, 0.2]])
+@patch("knowledge_base.retriever._load_cross_encoder")
+def test_index_built_with_another_embedding_model_is_refused(mock_load_cross_encoder, _mock_embed):
+    candidate = _candidate("Python Basics covers variables, loops and functions in depth.")
+    candidate["metadata"]["embedding_model"] = "some/other-model"
+    retriever = Retriever(vector_store=FakeVectorStore([candidate]))
+
+    import pytest
+    with pytest.raises(ValueError, match="Rebuild"):
+        retriever.retrieve("python")
+    mock_load_cross_encoder.assert_not_called()
+
+
+@patch("knowledge_base.retriever.embed_texts", return_value=[[0.1, 0.2]])
+@patch("knowledge_base.retriever._load_cross_encoder")
+def test_index_with_the_same_model_is_searched(mock_load_cross_encoder, _mock_embed):
+    from knowledge_base.embedding_service import DEFAULT_MODEL_NAME
+
+    mock_load_cross_encoder.return_value.predict.return_value = [3.0]
+    candidate = _candidate("Python Basics covers variables, loops and functions in depth.")
+    candidate["metadata"]["embedding_model"] = DEFAULT_MODEL_NAME
+
+    results = Retriever(vector_store=FakeVectorStore([candidate])).retrieve("python")
+
+    assert len(results) == 1

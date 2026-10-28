@@ -48,6 +48,9 @@ class NormalizedTender(BaseModel):
     eligibility: list[str] = Field(default_factory=list)
     submission_instructions: Optional[str] = None
     submission_url: Optional[str] = None
+    # The buyer's contact email exactly as the official API gives it (the
+    # only address an application may ever be prepared for).
+    contact_email: Optional[str] = None
     available_documents: list[str] = Field(default_factory=list)
     retrieved_at: str = Field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()

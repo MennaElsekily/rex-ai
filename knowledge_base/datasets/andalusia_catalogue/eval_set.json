@@ -1,0 +1,254 @@
+{
+  "description": "Retrieval evaluation set for the Andalusia Academy demo catalogue. A chunk is relevant when it contains every must_contain string. Used with: python -m knowledge_base.evaluation --eval-set knowledge_base/datasets/andalusia_catalogue/eval_set.json Items with retrieval_query mirror the query REX sends (its course-listing hint).",
+  "items": [
+    {
+      "language": "en",
+      "question": "How much does the Flutter Mobile App Development course cost?",
+      "must_contain": [
+        "Flutter Mobile App Development",
+        "7000"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "What are the entry requirements for Machine Learning Practitioner?",
+      "must_contain": [
+        "Machine Learning Practitioner",
+        "Comfortable with Python"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "Who teaches Building LLM Applications with RAG?",
+      "must_contain": [
+        "Building LLM Applications",
+        "Omar Haddad"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "Is the Excel for Business Analysis course online or on campus?",
+      "must_contain": [
+        "Excel for Business Analysis",
+        "on campus"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "When does the SQL and Power BI course start?",
+      "must_contain": [
+        "SQL and Power BI",
+        "2026-11-22"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "What will I learn in Web Development Fundamentals?",
+      "must_contain": [
+        "Web Development Fundamentals",
+        "semantic HTML"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "What is the refund policy?",
+      "must_contain": [
+        "refund",
+        "7 days"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "Do I get a certificate after the course?",
+      "must_contain": [
+        "certificate of completion",
+        "80%"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "Are your courses accredited?",
+      "must_contain": [
+        "Are the courses accredited"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "Is there a student discount?",
+      "must_contain": [
+        "STUDENT20"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "Can I pay the fee in installments?",
+      "must_contain": [
+        "pay the course fee in instalments"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "What documents do I need to register?",
+      "must_contain": [
+        "national ID"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "Which course teaches Power BI dashboards?",
+      "must_contain": [
+        "SQL and Power BI",
+        "Power BI"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "What jobs can I get after Full Stack Web Development with React and Node.js?",
+      "must_contain": [
+        "Full Stack Web Development",
+        "Full stack developer"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "How many hours per week does Advanced Flutter with Firebase need?",
+      "must_contain": [
+        "Advanced Flutter with Firebase",
+        "7 hours per week"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "What topics does Marketing Analytics and Campaign Optimization cover?",
+      "must_contain": [
+        "Marketing Analytics and Campaign Optimization",
+        "Attribution"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "How experienced is Karim Nabil?",
+      "must_contain": [
+        "Karim Nabil",
+        "13"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "What is the fee for Social Media and Paid Advertising?",
+      "must_contain": [
+        "Social Media and Paid Advertising",
+        "6000"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "What are the prerequisites for Backend APIs with Python and Django?",
+      "must_contain": [
+        "Backend APIs with Python and Django",
+        "SW-201"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "Which AI course is for complete beginners?",
+      "must_contain": [
+        "Introduction to Artificial Intelligence and Python",
+        "Beginner"
+      ]
+    },
+    {
+      "language": "ar",
+      "question": "كم سعر كورس فلاتر؟",
+      "must_contain": [
+        "Flutter",
+        "7000"
+      ]
+    },
+    {
+      "language": "ar",
+      "question": "ما هي متطلبات الالتحاق بدورة تعلم الآلة؟",
+      "must_contain": [
+        "Machine Learning Practitioner",
+        "Comfortable with Python"
+      ]
+    },
+    {
+      "language": "ar",
+      "question": "ما هي سياسة استرداد الرسوم؟",
+      "must_contain": [
+        "refund",
+        "7 days"
+      ]
+    },
+    {
+      "language": "ar",
+      "question": "هل يوجد خصم للطلاب؟",
+      "must_contain": [
+        "STUDENT20"
+      ]
+    },
+    {
+      "language": "ar",
+      "question": "هل الدورات معتمدة؟",
+      "must_contain": [
+        "accredited"
+      ]
+    },
+    {
+      "language": "ar",
+      "question": "عايز اتعلم تسويق رقمي من الصفر",
+      "must_contain": [
+        "Digital Marketing Fundamentals"
+      ]
+    },
+    {
+      "language": "ar",
+      "question": "ما هي المستندات المطلوبة للتسجيل؟",
+      "must_contain": [
+        "national ID"
+      ]
+    },
+    {
+      "language": "mixed",
+      "question": "إمتى يبدأ كورس SQL and Power BI؟",
+      "must_contain": [
+        "SQL and Power BI",
+        "2026-11-22"
+      ]
+    },
+    {
+      "language": "mixed",
+      "question": "مين المدرب في كورس Building LLM Applications with RAG؟",
+      "must_contain": [
+        "Building LLM Applications",
+        "Omar Haddad"
+      ]
+    },
+    {
+      "language": "mixed",
+      "question": "كام سعر Advanced Flutter with Firebase؟",
+      "must_contain": [
+        "Advanced Flutter with Firebase",
+        "9500"
+      ]
+    },
+    {
+      "language": "en",
+      "question": "Which courses do you offer?",
+      "must_contain": [
+        "Courses Offered",
+        "Flutter Mobile App Development"
+      ],
+      "retrieval_query": "Which courses do you offer?. List of all courses offered at each level."
+    },
+    {
+      "language": "ar",
+      "question": "ايه الكورسات المتاحة؟",
+      "retrieval_query": "ايه الكورسات المتاحة؟. List of all courses offered at each level.",
+      "must_contain": [
+        "Courses Offered"
+      ]
+    }
+  ]
+}

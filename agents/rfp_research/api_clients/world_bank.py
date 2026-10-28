@@ -24,6 +24,7 @@ import json
 import logging
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from typing import Any
 
 from agents.rfp_research.api_clients.base import APIQueryResult, NormalizedTender
@@ -94,6 +95,31 @@ def query_world_bank_egypt(
     )
 
 
+def _parse_notice_date(raw_date: Any) -> str | None:
+    """Parse the API's 'DD-Mon-YYYY' noticedate into an ISO date string."""
+    if not raw_date:
+        return None
+
+    try:
+        return datetime.strptime(str(raw_date), "%d-%b-%Y").date().isoformat()
+    except ValueError:
+        # Keep the raw value rather than discard a real, just
+        # differently-formatted date -- never invent a date instead.
+        return str(raw_date)
+
+
+def _build_submission_instructions(raw: dict[str, Any]) -> str | None:
+    """Compose a contact string from whatever contact fields the API provides."""
+    parts = [
+        raw.get("contact_name"),
+        raw.get("contact_email"),
+        raw.get("contact_phone_no"),
+        raw.get("contact_address"),
+    ]
+    parts = [str(part) for part in parts if part]
+    return "; ".join(parts) if parts else None
+
+
 def _normalize(raw: dict[str, Any]) -> NormalizedTender | None:
     country = str(raw.get("project_ctry_name") or "")
 
@@ -112,13 +138,20 @@ def _normalize(raw: dict[str, Any]) -> NormalizedTender | None:
 
     missing: list[str] = []
 
+    title = raw.get("bid_description") or raw.get("project_name")
+    if not title:
+        missing.append("title")
+
     deadline = raw.get("submission_deadline_date")
     if deadline:
         deadline = str(deadline).split("T")[0]
     else:
         missing.append("deadline")
 
-    organization = raw.get("project_name")
+    # The World Bank's own contact details for the notice are a more
+    # accurate "issuing organization" than the broader project name,
+    # when present.
+    organization = raw.get("contact_organization") or raw.get("project_name")
     if not organization:
         missing.append("organization")
 
@@ -126,19 +159,44 @@ def _normalize(raw: dict[str, Any]) -> NormalizedTender | None:
     if not reference_number:
         missing.append("reference_number")
 
+    if not notice_type:
+        missing.append("category")
+
+    publication_date = _parse_notice_date(raw.get("noticedate"))
+    if not publication_date:
+        missing.append("publication_date")
+
+    submission_url = raw.get("contact_web_url") or None
+    if not submission_url:
+        missing.append("submission_url")
+
+    submission_instructions = _build_submission_instructions(raw)
+    if not submission_instructions:
+        missing.append("submission_instructions")
+
+    # This API does not expose eligibility requirements or a list of
+    # attached documents for any record -- always explicitly flagged
+    # as missing rather than silently left as an empty list.
+    missing.append("eligibility")
+    missing.append("available_documents")
+
     return NormalizedTender(
-        title=raw.get("bid_description") or raw.get("project_name"),
+        title=title,
         reference_number=reference_number,
         organization=organization,
         country="Egypt",
         source_id=str(record_id),
         source_url=f"https://search.worldbank.org/notice/{record_id}",
-        publication_date=None,
+        publication_date=publication_date,
         deadline=deadline,
         status=raw.get("notice_status"),
         category=notice_type,
         scope_of_work=raw.get("bid_description"),
         eligibility=[],
+        submission_instructions=submission_instructions,
+        submission_url=submission_url,
+        contact_email=str(raw.get("contact_email") or "").strip() or None,
+        available_documents=[],
         missing_information=missing,
         source_name=SOURCE_NAME,
         verification_status="verified_from_api",

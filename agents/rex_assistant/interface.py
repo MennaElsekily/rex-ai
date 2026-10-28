@@ -15,9 +15,16 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from agents.config import rex_model
 from agents.rex_assistant.graph import build_graph
 from agents.rex_assistant.lead_store import JSONLLeadStore, LeadStore
 from agents.rex_assistant.mcp_client import RagMcpClient
+
+
+_PER_TURN_KEYS = (
+    "rag_result", "evidence", "response", "intent", "next_step",
+    "answer_mode", "clarify", "detected_language", "response_language",
+)
 
 
 def _new_state() -> dict[str, Any]:
@@ -27,7 +34,14 @@ def _new_state() -> dict[str, Any]:
         "consent_pending": False,
         "lead_captured": False,
         "preferred_language": None,
+        "conversation_language": None,
         "history": [],
+        "mode": None,
+        "pending_field": None,
+        "field_attempts": {},
+        "declined_fields": [],
+        "discovery_intro_shown": False,
+        "active_topic": None,
     }
 
 
@@ -57,13 +71,15 @@ class RexAssistantAgent:
     def __init__(
         self,
         lead_store: Optional[LeadStore] = None,
-        model: str = "qwen2.5:3b",
+        model: Optional[str] = None,
         mcp_client: Optional[RagMcpClient] = None,
     ) -> None:
+        """model: the Ollama chat model; defaults to REX_LLM_MODEL or qwen2.5:7b."""
         self.lead_store = lead_store or JSONLLeadStore()
+        self.model = model or rex_model()
         self._graph, self._mcp_client = build_graph(
             lead_store=self.lead_store,
-            model=model,
+            model=self.model,
             mcp_client=mcp_client,
         )
 
@@ -121,6 +137,10 @@ class RexAssistantAgent:
 
         working_state = dict(state) if state else _new_state()
 
+        # Per-turn results never carry over into the next turn.
+        for key in _PER_TURN_KEYS:
+            working_state.pop(key, None)
+
         if preferred_language:
             working_state["preferred_language"] = preferred_language
 
@@ -146,6 +166,8 @@ class RexAssistantAgent:
         result_state["history"] = history
 
         rag_result = result_state.get("rag_result") or {}
+        # Retrieved passages are only needed while writing this answer.
+        result_state.pop("evidence", None)
 
         return {
             "request_id": request_id,
@@ -154,7 +176,10 @@ class RexAssistantAgent:
             "result": {
                 "answer": result_state.get("response", ""),
                 "sources": rag_result.get("sources", []),
+                "answer_status": rag_result.get("status"),
                 "profile": result_state.get("profile", {}),
+                "mode": result_state.get("mode"),
+                "pending_field": result_state.get("pending_field"),
                 "consent_pending": result_state.get("consent_pending", False),
                 "lead_captured": result_state.get("lead_captured", False),
                 "detected_language": result_state.get("detected_language"),

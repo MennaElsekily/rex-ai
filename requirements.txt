@@ -1,29 +1,40 @@
-ollama
 streamlit
 pytest
 
-# Agent orchestration and LLM integration
-langchain
+# Agent orchestration and LLM integration (LangChain is used through its
+# split packages: langchain-core and langchain-ollama, which also installs
+# the ollama client)
 langchain-core
 langgraph
 langchain-ollama
 pydantic
 
-# Document parsing
+# Document parsing (PDF, DOCX, PPTX, XLSX, HTML)
 pypdf
 python-docx
 python-pptx
+openpyxl
+beautifulsoup4
+
+# PDF generation: demo catalogue (knowledge_base/datasets/) and curricula
+# (agents/curriculum_research/pdf.py). Arabic PDFs need letter shaping
+# (arabic-reshaper, MIT) and right-to-left ordering (python-bidi, LGPL).
+reportlab
+arabic-reshaper==3.0.1
+python-bidi==0.6.12
 
 # Vector database and embeddings
 chromadb
 sentence-transformers
 
-# MCP integration
-fastmcp
+# Configuration (.env) and HTTP clients (World Bank, Tavily)
+python-dotenv
+httpx
+
+# MCP integration (the official SDK)
 mcp
 
-# Language detection and translation
-lingua-language-detector
+# Arabic -> English query translation (MarianMT needs sentencepiece and sacremoses)
 transformers
 sentencepiece
 sacremoses==0.2.0

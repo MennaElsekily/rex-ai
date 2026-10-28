@@ -20,6 +20,60 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
+_SENTENCE_END = re.compile(r"[.!?:;؟،…)\]\"']$")
+_LIST_START = re.compile(r"^\s*(?:[-*•▪◦]|\d+[.)]\s|[a-z][.)]\s)")
+_HEADING_START = re.compile(r"^\s*(?:#{1,6}\s|\d+(?:\.\d+)*[.)]?\s+[A-Z])")
+
+
+def unwrap_lines(text: str) -> str:
+    """
+    Re-join lines that a PDF layout broke mid-sentence ("explain each\\n
+    transformation.") while keeping headings, list items, key: value
+    lines and paragraph breaks on their own lines.
+    """
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+
+    out: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.strip()
+        previous = out[-1].rstrip() if out else ""
+        if (
+            previous
+            and stripped
+            and not _SENTENCE_END.search(previous)
+            and not _LIST_START.match(stripped)
+            and not _HEADING_START.match(stripped)
+            and (stripped[0].islower() or stripped[0].isdigit())
+        ):
+            out[-1] = f"{previous} {stripped}"
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
+def is_usable_text(text: str, min_chars: int = 20) -> bool:
+    """
+    False for text that should not be indexed: (almost) empty, as from a
+    scanned PDF with no text layer, or mostly unreadable characters, as
+    from a broken text extraction.
+    """
+    if not isinstance(text, str):
+        return False
+    visible = [ch for ch in text if not ch.isspace()]
+    if len(visible) < min_chars:
+        return False
+    readable = sum(ch.isalnum() or ch in ".,;:!?()-%/&'\"#*@+–—·•" for ch in visible)
+    replacement = text.count("�")
+    return readable / len(visible) >= 0.6 and replacement / len(visible) < 0.05
+
+
+def _edge_key(line: str) -> str:
+    # Page numbers differ on every page ("Page 3", "3 / 12"), so they
+    # are ignored when comparing repeated header and footer lines.
+    return re.sub(r"\d+", "#", line.strip().casefold())
+
+
 def remove_repeated_headers_footers(
     pages: list[dict[str, Any]],
     min_repetition_ratio: float = 0.6,
@@ -76,9 +130,13 @@ def remove_repeated_headers_footers(
         ]
 
         if len(non_empty_indices) >= 4:
+            # Multi-line header blocks (academy name, catalogue title,
+            # notice, page number) need a wider window on longer pages;
+            # a line is still removed only if it repeats across pages.
+            window = max(2, min(4, len(non_empty_indices) // 2))
             edge_indices = (
-                set(non_empty_indices[:2])
-                | set(non_empty_indices[-2:])
+                set(non_empty_indices[:window])
+                | set(non_empty_indices[-window:])
             )
         else:
             edge_indices = set()
@@ -91,7 +149,7 @@ def remove_repeated_headers_footers(
 
         # Count a candidate at most once per page.
         page_candidates = {
-            lines[index].strip().casefold()
+            _edge_key(lines[index])
             for index in edge_indices
             if lines[index].strip()
         }
@@ -121,7 +179,7 @@ def remove_repeated_headers_footers(
             for index, line in enumerate(lines)
             if not (
                 index in edge_indices
-                and line.strip().casefold() in repeated_lines
+                and _edge_key(line) in repeated_lines
             )
         ]
 

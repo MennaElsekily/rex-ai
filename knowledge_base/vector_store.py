@@ -9,6 +9,18 @@ DEFAULT_STORE_PATH = str(
 )
 
 
+def _flat_value(value: Any) -> str | int | float | bool | None:
+    """A metadata value as a Chroma scalar, or None to leave it out."""
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        return value if value.strip() else None
+    if isinstance(value, (list, tuple)):
+        parts = [str(item) for item in value if item not in (None, "")]
+        return "; ".join(parts) if parts else None
+    return None
+
+
 class VectorStore:
     """Store and retrieve document chunks using ChromaDB."""
 
@@ -82,17 +94,25 @@ class VectorStore:
 
             metadata["chunk_id"] = int(chunk_id)
 
-            # Store extracted fields as flat, searchable metadata.
+            # Store extracted fields as flat, searchable metadata. Chroma
+            # accepts scalars only: lists become "a; b" strings, and the
+            # document's explicit fields become "field_<name>" entries
+            # (usable in metadata filters, never colliding with these keys).
             extracted = chunk.get("extracted_metadata", {})
 
             if isinstance(extracted, dict):
                 for key, value in extracted.items():
-                    if (
-                        isinstance(key, str)
-                        and key not in metadata
-                        and isinstance(value, (str, int, float, bool))
-                    ):
-                        metadata[key] = value
+                    if not isinstance(key, str) or key in metadata:
+                        continue
+                    if key == "explicit_fields" and isinstance(value, dict):
+                        for field, field_value in value.items():
+                            flat = _flat_value(field_value)
+                            if flat is not None:
+                                metadata.setdefault(f"field_{field}", flat)
+                        continue
+                    flat = _flat_value(value)
+                    if flat is not None:
+                        metadata[key] = flat
 
             metadatas.append(metadata)
 

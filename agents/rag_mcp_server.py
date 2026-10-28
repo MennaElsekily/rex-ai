@@ -1,59 +1,57 @@
 
+import logging
 from typing import Any, Optional
 
 from mcp.server.mcpserver import MCPServer
 
-from knowledge_base.answer_generator import RAGAnswerGenerator
+from knowledge_base.evidence import EvidenceRetriever, safe_search
 
+# stdout carries the MCP protocol, so diagnostics go to stderr only.
+logging.basicConfig(level=logging.WARNING)
+logger = logging.getLogger(__name__)
 
 mcp = MCPServer("REX AI Knowledge Base")
 
-rag = RAGAnswerGenerator()
+# One retriever (embedding model, reranker, Chroma connection) for the
+# lifetime of this server process.
+evidence = EvidenceRetriever()
 
 
 @mcp.tool()
-def ask_knowledge_base(
+def search_knowledge_base(
     question: str,
     retrieval_query: Optional[str] = None,
     metadata_filter: Optional[dict[str, Any]] = None,
-    preferred_language: Optional[str] = None,
 ) -> dict:
     """
-    Answer a question using REX AI's document knowledge base.
+    Retrieve document passages relevant to a question. Returns evidence
+    only -- it does NOT write an answer; the calling agent does that.
 
     Args:
         question: The user's original question, in Arabic or English.
-        retrieval_query: Optional pre-built search query to use for
-            retrieval instead of the question itself (e.g. a
-            recommendation query assembled from a learner profile).
-        metadata_filter: Optional filter over indexed chunk metadata
-            fields (only applied when the referenced fields exist).
-        preferred_language: Optional "ar" or "en" override for the
-            response language, independent of the question's language.
+            Returned unchanged.
+        retrieval_query: Optional search text prepared by the agent (e.g.
+            from a learner profile); translated to English when needed.
+        metadata_filter: Optional filter over indexed metadata fields.
 
-    Returns an answer generated from retrieved documents, with source
-    references. Use this tool whenever an agent needs information from
-    the knowledge base rather than calling the RAG components directly.
+    Returns:
+        status: "ok", "no_results", "empty_index", "invalid_request" or
+            "error" (no results and failures are never confused).
+        question, retrieval_query (text actually searched),
+        query_language, translation ("not_needed" / "translated" /
+        "failed"), translation_error,
+        chunks: [{reference, text, source (file name only), page,
+            page_end, section, section_path, record_id, chunk_id,
+            relevance_score, fields (structured fields of the source
+            record or section, e.g. {"level": "Beginner"})}],
+        error.
     """
-    try:
-        return rag.answer(
-            question,
-            retrieval_query=retrieval_query,
-            metadata_filter=metadata_filter,
-            preferred_language=preferred_language,
-        )
-    except ValueError as exc:
-        return {
-            "error": str(exc),
-            "answer": "",
-            "sources": [],
-        }
-    except Exception:
-        return {
-            "error": "The knowledge-base request failed.",
-            "answer": "",
-            "sources": [],
-        }
+    return safe_search(
+        evidence,
+        question,
+        retrieval_query=retrieval_query,
+        metadata_filter=metadata_filter,
+    )
 
 
 if __name__ == "__main__":

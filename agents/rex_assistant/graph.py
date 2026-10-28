@@ -1,23 +1,33 @@
 """
 LangGraph workflow for Agent 1 (REX Assistant).
 
-Reaches the existing RAG knowledge base exclusively through the MCP
-tool in agents/rag_mcp_server.py (via RagMcpClient), never by importing
-knowledge_base.answer_generator or other RAG internals directly here.
-The MCP server itself still wraps the validated RAGAnswerGenerator, so
-no RAG logic is duplicated -- this module only adds what Agent 1's own
-requirements need: profile-aware follow-up questions, course
-recommendation/Q&A via the MCP tool, and consent-gated lead capture.
+    detect_language -> handle_consent                       (consent reply)
+                    -> understand -> ask_question            (discovery)
+                                  -> general                 (greeting/help)
+                                  -> retrieve -> generate    (both answer modes)
 
-This agent does not route between the five REX AI agents and does not
-decide which agent handles a request -- that is the central
-orchestrator's responsibility, implemented separately by a teammate.
+Two answer modes share one retrieval path and one answer writer:
+- Personalized recommendation: the six discovery fields (official brief,
+  section 10) are collected one question at a time with fixed bilingual
+  templates (discovery.py); then courses are retrieved for the profile.
+- Direct course question: answered straight away from retrieved evidence,
+  without the questionnaire. A question asked mid-discovery is answered
+  and the questionnaire resumes from the same pending field afterwards.
+
+Knowledge is reached only through the MCP tool search_knowledge_base
+(agents/rag_mcp_server.py), which returns evidence, never an answer.
+REX writes the final answer itself in `generate` (generate_answer()
+below): it checks the evidence, builds its prompt from the retrieved
+chunks (prompts.py), calls its own LangChain chat model, and for
+recommendations applies its course checks (recommendation.py).
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
+import urllib.request
 from functools import lru_cache
 from typing import Any, Optional
 
@@ -25,50 +35,164 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, StateGraph
 
-from knowledge_base.language import detect_language, resolve_response_language
+from agents.config import REX_DEFAULT_MODEL
+from agents.course_intent import (
+    CATALOGUE_LISTING_HINT,
+    COURSE_QUESTION,
+    GENERAL,
+    RECOMMENDATION,
+    classify_course_intent,
+    is_catalogue_listing,
+    is_small_talk,
+    looks_like_question,
+    names_a_course,
+)
+from agents.rex_assistant import discovery
 from agents.rex_assistant.lead_store import LeadStore
 from agents.rex_assistant.mcp_client import RagMcpClient
-from agents.rex_assistant.state import (
-    PROFILE_FIELDS_IN_PRIORITY_ORDER,
-    RexAssistantState,
+from agents.rex_assistant.prompts import (
+    FOREIGN_SCRIPT,
+    LANGUAGE_REMINDER,
+    MODE_QUESTION,
+    MODE_RECOMMENDATION,
+    build_messages,
+    evidence_context,
+    fallback_key,
+    message,
+)
+from agents.rex_assistant.recommendation import check_recommendation, recommendation_task
+from agents.rex_assistant.state import RexAssistantState
+from agents.text_utils import normalize_for_matching
+from knowledge_base.language import (
+    detect_conversation_language,
+    detect_explicit_language_request,
+    looks_like_arabizi,
+    resolve_conversation_language,
+    transliterate_arabizi,
 )
 
+logger = logging.getLogger(__name__)
 
-_KNOWLEDGE_QUESTION_KEYWORDS = (
-    "course", "courses", "programme", "program", "fee", "fees", "price",
-    "cost", "duration", "prerequisite", "instructor", "schedule",
-    "format", "outcome", "content", "curriculum", "audience",
-    "دورة", "دورات", "برنامج", "رسوم", "سعر", "مدة", "متطلبات",
-    "مدرب", "جدول", "محتوى", "مناهج",
-)
+DISCOVERY = "discovery"
 
-_CONSENT_YES = (
-    "yes", "sure", "ok", "okay", "agree", "fine",
-    "نعم", "موافق", "تمام", "حسنا", "اوافق", "أوافق",
+# Consent words are matched as whole words of the normalized reply
+# (agents.text_utils.normalize_for_matching), never as substrings: "ok"
+# inside "look" or "no" inside "know" must not decide consent.
+_CONSENT_REFUSAL_PHRASES = (
+    "do not agree", "don't agree", "dont agree", "not agree",
+    "لا اوافق", "مش موافق", "مش موافقه", "غير موافق", "مش عايز", "لا اريد",
 )
-_CONSENT_NO = (
-    "no", "nope", "don't", "do not", "disagree",
-    "لا", "ارفض", "أرفض", "لا أوافق",
+# Agreement idioms that contain a negative word ("I don't mind").
+_CONSENT_AGREE_PHRASES = (
+    "no problem", "لا مانع", "مفيش مانع", "ما عندي مانع", "معنديش مانع",
 )
+_CONSENT_YES_WORDS = frozenset({
+    "yes", "yeah", "yep", "sure", "ok", "okay", "agree", "agreed",
+    "نعم", "موافق", "موافقه", "اوافق", "تمام", "حسنا", "ايوه", "ايوا", "اكيد",
+})
+_CONSENT_NO_WORDS = frozenset({
+    "no", "nope", "nah", "not", "don", "dont", "never", "disagree",
+    "decline", "refuse",
+    "لا", "ارفض", "مش",
+})
+# Deferring or uncertain replies are never treated as consent.
+_CONSENT_HEDGE_WORDS = frozenset({
+    "maybe", "perhaps", "later", "wait", "unsure",
+    "ربما", "يمكن", "بعدين", "لاحقا",
+})
+_WORD_RE = re.compile(r"[^\W_]+")
+
+_TEXT = {
+    "greeting": {
+        "en": (
+            "Hello! I'm REX, the academy's course advisor. I can recommend "
+            "courses that fit your goals, or answer questions about our "
+            "courses (content, duration, prerequisites, format...). How "
+            "can I help?"
+        ),
+        "ar": (
+            "أهلاً! أنا ريكس، مستشار الدورات في الأكاديمية. يمكنني ترشيح "
+            "دورات تناسب أهدافك، أو الإجابة عن أسئلتك حول الدورات (المحتوى، "
+            "المدة، المتطلبات، طريقة التدريب...). كيف أساعدك؟"
+        ),
+    },
+    "resume": {
+        "en": "Whenever you're ready, we can continue: ",
+        "ar": "عندما تكون مستعدًا نكمل: ",
+    },
+    "incomplete": {
+        "en": "Note: these suggestions use only what you've shared so far ({fields} not provided).",
+        "ar": "ملاحظة: هذه الترشيحات مبنية فقط على ما شاركته حتى الآن (لم تُذكر: {fields}).",
+    },
+    "consent": {
+        "en": (
+            "Would you like us to save your details (background, goal and "
+            "preferences) so the academy can follow up with you? Nothing is "
+            "saved unless you say yes. (yes / no)"
+        ),
+        "ar": (
+            "هل توافق على أن نحفظ بياناتك (الخلفية والهدف والتفضيلات) لتتابع "
+            "معك الأكاديمية لاحقًا؟ لن يتم حفظ أي شيء إلا إذا وافقت. (نعم / لا)"
+        ),
+    },
+    "saved": {
+        "en": "Thank you! Your details have been saved for follow-up.",
+        "ar": "شكرًا لك! تم حفظ بياناتك للمتابعة.",
+    },
+    "not_saved": {
+        "en": "No problem, nothing has been saved.",
+        "ar": "لا مشكلة، لم يتم حفظ أي معلومات.",
+    },
+    "save_failed": {
+        "en": "Sorry, I couldn't save your details right now. Nothing was stored.",
+        "ar": "عذرًا، تعذّر حفظ بياناتك الآن. لم يتم تخزين أي شيء.",
+    },
+    "confirm": {
+        "en": "Sorry, could you confirm with yes or no?",
+        "ar": "عذرًا، هل توافق على حفظ بياناتك للمتابعة؟ (نعم / لا)",
+    },
+}
+
+
+def _t(key: str, language: Optional[str]) -> str:
+    return _TEXT[key]["ar" if language == "ar" else "en"]
+
+
+# Tokens the model may read per call. A recommendation prompt is about
+# 1,700 tokens; history and longer evidence can roughly double that.
+# Set explicitly so a smaller server default never silently cuts the
+# prompt.
+LLM_CONTEXT_TOKENS = 8192
+
+
+def _supports_thinking(model: str) -> bool:
+    """
+    Whether the Ollama model has a "thinking" mode (e.g. Qwen3). Asked from
+    the local Ollama server; False when it cannot be determined.
+    """
+    try:
+        request = urllib.request.Request(
+            "http://localhost:11434/api/show",
+            data=json.dumps({"model": model}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return "thinking" in (json.load(response).get("capabilities") or [])
+    except Exception:
+        return False
 
 
 @lru_cache(maxsize=4)
 def _get_llm(model: str) -> ChatOllama:
-    """Reuse one ChatOllama client per model name across graph calls."""
-    return ChatOllama(model=model, temperature=0)
-
-
-def _looks_like_knowledge_question(text: str) -> bool:
-    normalized = text.casefold()
-    return any(keyword in normalized for keyword in _KNOWLEDGE_QUESTION_KEYWORDS)
-
-
-def _missing_profile_fields(profile: dict[str, Any]) -> list[str]:
-    return [
-        field
-        for field in PROFILE_FIELDS_IN_PRIORITY_ORDER
-        if not profile.get(field)
-    ]
+    """
+    Reuse one ChatOllama client per model name across graph calls.
+    Thinking models answer directly (no hidden reasoning pass first), so
+    replies stay fast.
+    """
+    options: dict[str, Any] = {"model": model, "temperature": 0, "num_ctx": LLM_CONTEXT_TOKENS}
+    if _supports_thinking(model):
+        options["reasoning"] = False
+    return ChatOllama(**options)
 
 
 def _parse_json_object(raw_text: str) -> dict[str, Any]:
@@ -86,326 +210,538 @@ def _parse_json_object(raw_text: str) -> dict[str, Any]:
 
 
 def _detect_consent(text: str) -> Optional[bool]:
-    normalized = text.casefold().strip()
+    """
+    True only for a clear yes, False for a clear no, otherwise None
+    (the caller re-asks). Mixed replies such as "yes, but not now" are
+    None: a lead is never saved on an unclear answer.
+    """
+    normalized = normalize_for_matching(text).replace("’", "'")
+    words = set(_WORD_RE.findall(normalized))
+    has_hedge = bool(words & _CONSENT_HEDGE_WORDS)
 
-    if any(word in normalized for word in _CONSENT_NO):
+    def has_phrase(phrases: tuple[str, ...]) -> bool:
+        return any(
+            re.search(rf"(?<![^\W_]){re.escape(phrase)}(?![^\W_])", normalized)
+            for phrase in phrases
+        )
+
+    if has_phrase(_CONSENT_REFUSAL_PHRASES):
         return False
-    if any(word in normalized for word in _CONSENT_YES):
+    if has_phrase(_CONSENT_AGREE_PHRASES):
+        return None if has_hedge else True
+
+    has_yes = bool(words & _CONSENT_YES_WORDS)
+    has_no = bool(words & _CONSENT_NO_WORDS)
+
+    if has_no and not has_yes:
+        return False
+    if has_yes and not has_no and not has_hedge:
         return True
 
     return None
 
 
+# ---------------------------------------------------------------------
+# Nodes
+# ---------------------------------------------------------------------
+
 def make_detect_language_node():
     def detect_language_node(state: RexAssistantState) -> dict[str, Any]:
-        detected = detect_language(state["user_input"])
-        response_language = resolve_response_language(
-            detected,
-            state.get("preferred_language"),
+        """
+        Reply language = an explicit request, else the language this
+        message is confidently written in, else the conversation's
+        previous language (so "ok" or "5000" never flips it).
+        """
+        text = state["user_input"]
+        preferred = (
+            detect_explicit_language_request(text)
+            or state.get("preferred_language")
         )
+        detected = detect_conversation_language(text)
 
         return {
             "detected_language": detected,
-            "response_language": response_language,
+            "conversation_language": detected or state.get("conversation_language"),
+            "preferred_language": preferred,
+            "response_language": resolve_conversation_language(
+                text, state.get("conversation_language"), preferred
+            ),
         }
 
     return detect_language_node
 
 
-def make_update_profile_node(model: str):
-    def update_profile_node(state: RexAssistantState) -> dict[str, Any]:
-        profile = dict(state.get("profile", {}))
-        llm = _get_llm(model)
-
-        instruction = (
-            "Extract any of the following fields the user just mentioned: "
-            "background, career_goal, skill_level, interests, budget, "
-            "available_time. Respond with ONLY a JSON object using these "
-            "exact keys. Omit a key entirely if it was not mentioned in "
-            "this message. Do not guess values that were not stated.\n\n"
-            f"User message: {state['user_input']}"
-        )
-
-        try:
-            reply = llm.invoke([
-                SystemMessage(content=(
-                    "You extract structured facts from a single user "
-                    "message. Reply with raw JSON only, no commentary."
-                )),
-                HumanMessage(content=instruction),
-            ])
-            updates = _parse_json_object(reply.content)
-        except Exception:
-            # A classification failure should not block the conversation;
-            # simply proceed without updating the profile this turn.
-            updates = {}
-
-        for field in (
-            "background", "career_goal", "skill_level",
-            "interests", "budget", "available_time",
-        ):
-            value = updates.get(field)
-            if isinstance(value, str) and value.strip():
-                profile[field] = value.strip()
-
-        return {"profile": profile}
-
-    return update_profile_node
-
-
 def route_after_language(state: RexAssistantState) -> str:
     """
-    Send a reply to a pending consent question straight to handle_consent,
-    without running profile extraction on it first -- otherwise a plain
-    "yes"/"no" gets misread as a profile fact (e.g. an "interest").
+    A reply to a pending consent question goes straight to
+    handle_consent, so "yes"/"no" is never read as a profile fact.
+
+    A message that is clearly something else -- a course question, a
+    new request, or more than a short reply -- is handled normally
+    instead of being answered with "please confirm yes or no". Nothing
+    is saved: consent stays unanswered.
     """
-    if state.get("consent_pending"):
-        return "handle_consent"
-
-    return "update_profile"
-
-
-def route_after_profile(state: RexAssistantState) -> str:
-    profile = state.get("profile", {})
-    is_knowledge_question = _looks_like_knowledge_question(state["user_input"])
-    profile_sufficient = not _missing_profile_fields(profile)
-
-    if is_knowledge_question or profile_sufficient:
-        return "rag_answer"
-
-    return "ask_followup"
+    if not state.get("consent_pending"):
+        return "understand"
+    text = state.get("user_input", "")
+    if _detect_consent(text) is None and (
+        classify_course_intent(text) != GENERAL or len(text.split()) > 3
+    ):
+        return "understand"
+    return "handle_consent"
 
 
-def make_ask_followup_node(model: str):
-    def ask_followup_node(state: RexAssistantState) -> dict[str, Any]:
-        missing = _missing_profile_fields(state.get("profile", {}))
-        response_language = state.get("response_language") or "en"
-        llm = _get_llm(model)
+# Fields an extracted value is accepted for only when the message itself
+# answers them (normalize_answer on the message text).
+_EVIDENCE_FIELDS = ("skill_level", "training_preference", "budget", "available_time")
 
-        language_instruction = (
-            "Write the question in Modern Standard Arabic."
-            if response_language == "ar"
-            else "Write the question in English."
+
+def _extract_profile_facts(llm, text: str) -> dict[str, str]:
+    """LLM extraction of several profile facts from one free-form message."""
+    instruction = (
+        "Extract any of these fields the user just stated: background, "
+        "career_goal, skill_level, training_preference (online/offline), "
+        "budget, available_time, interests. Respond with ONLY a JSON "
+        "object using these exact keys. Omit a key entirely if it was not "
+        "stated -- never write placeholder text such as 'unknown'. Do not "
+        "guess. Keep values in the user's own language.\n\n"
+        f"User message: {text}"
+    )
+
+    if looks_like_arabizi(text):
+        instruction += (
+            "\n(This message is Egyptian Arabic written in Latin letters. "
+            f"Partial Arabic-script reading: {transliterate_arabizi(text)})"
         )
 
-        prompt = (
-            "You are REX Assistant, a friendly course-recommendation "
-            "chatbot. Ask the user ONE short, natural follow-up question "
-            f"to learn about: {missing[0]}. "
-            "Do not ask about anything else, and do not repeat "
-            "information already known. "
-            f"{language_instruction}"
-        )
-
-        try:
-            reply = llm.invoke([
-                SystemMessage(content=prompt),
-                HumanMessage(content=state["user_input"]),
-            ])
-            question = reply.content.strip()
-        except Exception as exc:
-            question = (
-                "عذرًا، حدثت مشكلة في الاتصال بالمساعد. حاول مرة أخرى."
-                if response_language == "ar"
-                else (
-                    "Sorry, I couldn't reach the assistant model right "
-                    "now. Please try again."
-                )
-            )
-
-        return {"response": question}
-
-    return ask_followup_node
+    try:
+        reply = llm.invoke([
+            SystemMessage(content=(
+                "You extract structured facts from a single user message. "
+                "Reply with raw JSON only, no commentary."
+            )),
+            HumanMessage(content=instruction),
+        ])
+        return _parse_json_object(reply.content)
+    except Exception:
+        # Extraction failure must not block the conversation.
+        return {}
 
 
-def make_rag_answer_node(mcp_client: RagMcpClient):
-    def rag_answer_node(state: RexAssistantState) -> dict[str, Any]:
-        profile = state.get("profile", {})
-        response_language = state.get("response_language")
+def make_understand_node(model: str):
+    def understand_node(state: RexAssistantState) -> dict[str, Any]:
+        text = state["user_input"]
+        profile = dict(state.get("profile") or {})
+        declined = list(state.get("declined_fields") or [])
+        attempts = dict(state.get("field_attempts") or {})
+        pending = state.get("pending_field")
+        in_discovery = state.get("mode") == DISCOVERY
+        active_topic = state.get("active_topic")
 
-        retrieval_query = None
+        # explicit_question: the message itself asks about a course.
+        # intent: the same, but a follow-up ("is it online?") also counts
+        # when a course is already being discussed.
+        explicit_question = classify_course_intent(text) == COURSE_QUESTION
+        intent = classify_course_intent(text, course_context=bool(active_topic))
+        recommend_now = discovery.wants_recommendation_now(text)
+        answered = False
+        unclear = False
 
-        if not _looks_like_knowledge_question(state["user_input"]):
-            # Profile is sufficient and this isn't a direct factual
-            # question: build a recommendation-oriented retrieval query
-            # from the gathered profile instead of the raw small-talk
-            # message, so retrieval has something concrete to search for.
-            parts = [
-                value
-                for value in (
-                    profile.get("career_goal"),
-                    profile.get("background"),
-                    profile.get("skill_level"),
-                    profile.get("interests"),
-                )
-                if value
-            ]
+        # 1. A reply to the pending discovery question ("online", "5000",
+        #    "skip") is tried first, unless it explicitly asks about a course.
+        if in_discovery and pending and not recommend_now and not explicit_question:
+            if discovery.wants_to_skip(text):
+                declined.append(pending)
+                pending, answered = None, True
+            else:
+                value = discovery.normalize_answer(pending, text)
+                if value:
+                    profile[pending] = value
+                    declined = [f for f in declined if f != pending]
+                    pending, answered = None, True
 
-            if parts:
-                retrieval_query = (
-                    "Suitable course recommendation for a learner with: "
-                    + "; ".join(parts)
-                )
+        question_turn = not answered and intent == COURSE_QUESTION
 
-        try:
-            # Reach the knowledge base only through the MCP tool -- the
-            # RAG internals (retriever, answer generator, translator)
-            # are never imported or called directly from this agent.
-            rag_result = mcp_client.ask_knowledge_base(
-                question=state["user_input"],
-                retrieval_query=retrieval_query,
-                preferred_language=state.get("preferred_language"),
-            )
-        except Exception as exc:
-            error_message = (
-                "عذرًا، تعذّر الوصول إلى قاعدة المعرفة حاليًا."
-                if response_language == "ar"
-                else (
-                    "Sorry, the knowledge base is temporarily unavailable."
-                )
-            )
-            return {
-                "rag_result": {
-                    "answer": error_message,
-                    "sources": [],
-                    "error": f"{type(exc).__name__}: {exc}",
-                },
-                "response": error_message,
-            }
+        # 2. Free-form messages can state several facts at once ("I'm an
+        #    accountant, beginner, I want to become a data analyst").
+        if intent == RECOMMENDATION or (in_discovery and not question_turn):
+            for field, value in _extract_profile_facts(_get_llm(model), text).items():
+                if field not in discovery.ALL_FIELDS or not isinstance(value, str):
+                    continue
+                if field in _EVIDENCE_FIELDS:
+                    # Small models fill these in unasked ("online",
+                    # "beginner"): keep them only when the learner's own
+                    # words support them, and use the learner's wording.
+                    normalized = discovery.normalize_answer(field, text) and (
+                        discovery.normalize_answer(field, value)
+                        if field in ("budget", "available_time")
+                        else discovery.normalize_answer(field, text)
+                    )
+                else:
+                    normalized = discovery.normalize_answer(field, value)
+                if normalized:
+                    profile[field] = normalized
+                    declined = [f for f in declined if f != field]
+                    if field == pending:
+                        pending, answered = None, True
 
-        response_text = rag_result["answer"]
+        # 3. Still no usable answer: re-ask, at most MAX_ATTEMPTS_PER_FIELD
+        #    times, then skip the field instead of looping.
+        if in_discovery and pending and not answered and not question_turn and not recommend_now:
+            attempts[pending] = attempts.get(pending, 0) + 1
+            if attempts[pending] >= discovery.MAX_ATTEMPTS_PER_FIELD:
+                declined.append(pending)
+                pending = None
+            else:
+                unclear = True
 
-        consent_pending = state.get("consent_pending", False)
-
-        if (
-            not state.get("lead_captured")
-            and not state.get("consent_pending")
-            and state.get("consent") is None
-            and not _missing_profile_fields(profile)
+        if question_turn:
+            if names_a_course(text):
+                active_topic = text  # later follow-ups are searched in its context
+            next_step, answer_mode = "retrieve", MODE_QUESTION
+        elif (
+            not in_discovery
+            and not active_topic
+            and classify_course_intent(text, course_context=True) == COURSE_QUESTION
         ):
-            consent_prompt = (
-                "\n\nهل توافق على أن نحتفظ بمعلوماتك الأساسية "
-                "(الخلفية التعليمية والهدف المهني) لمتابعتك لاحقًا؟ "
-                "(نعم / لا)"
-                if response_language == "ar"
-                else (
-                    "\n\nWould you like us to save your basic details "
-                    "(background and career goal) so we can follow up "
-                    "with you later? (yes / no)"
-                )
-            )
-            response_text += consent_prompt
-            consent_pending = True
+            # "How much does it cost?" with no course discussed yet, or a
+            # question naming a course without the word "course" ("Who
+            # teaches Building LLM Applications?"). The evidence decides:
+            # one matching course is answered; several are listed and the
+            # learner is asked which one (grounding rule 6).
+            next_step, answer_mode = "retrieve", MODE_QUESTION
+        elif intent == RECOMMENDATION or in_discovery or recommend_now:
+            in_discovery = True
+            missing = discovery.missing_fields(profile, declined)
+            if missing and not recommend_now:
+                pending = missing[0]
+                next_step, answer_mode = "ask_question", None
+            else:
+                next_step, answer_mode = "retrieve", MODE_RECOMMENDATION
+        elif looks_like_question(text) and not is_small_talk(text):
+            # Any other question ("How experienced is Karim Nabil?") is
+            # checked against the knowledge base rather than guessed from
+            # keywords: relevant evidence -> an answer; none -> the
+            # honest "couldn't find" message.
+            next_step, answer_mode = "retrieve", MODE_QUESTION
+        else:
+            next_step, answer_mode = "general", None
 
         return {
-            "rag_result": rag_result,
-            "response": response_text,
-            "consent_pending": consent_pending,
+            "profile": profile,
+            "declined_fields": declined,
+            "field_attempts": attempts,
+            "pending_field": pending,
+            "mode": DISCOVERY if in_discovery else state.get("mode"),
+            "active_topic": active_topic,
+            "intent": intent,
+            "next_step": next_step,
+            "answer_mode": answer_mode,
+            "clarify": unclear,
+            # Reached with a consent question open only when the learner
+            # moved on (route_after_language): leave consent unanswered.
+            "consent_pending": False,
         }
 
-    return rag_answer_node
+    return understand_node
+
+
+def route_after_understand(state: RexAssistantState) -> str:
+    return {
+        "ask_question": "ask_question",
+        "retrieve": "retrieve",
+        "general": "general",
+    }[state["next_step"]]
+
+
+def make_ask_question_node():
+    def ask_question_node(state: RexAssistantState) -> dict[str, Any]:
+        language = state.get("response_language") or "en"
+        field = state["pending_field"]
+        parts = []
+
+        if not state.get("discovery_intro_shown"):
+            parts.append(discovery.DISCOVERY_INTRO["ar" if language == "ar" else "en"])
+        if state.get("clarify"):
+            parts.append(discovery.CLARIFY_PREFIX["ar" if language == "ar" else "en"]
+                         + discovery.question_for(field, language))
+        else:
+            parts.append(discovery.question_for(field, language))
+
+        return {"response": "\n\n".join(parts), "discovery_intro_shown": True}
+
+    return ask_question_node
+
+
+def make_general_node():
+    def general_node(state: RexAssistantState) -> dict[str, Any]:
+        language = state.get("response_language") or "en"
+        return {"response": _t("greeting", language), "rag_result": None}
+
+    return general_node
+
+
+def _recommendation_query(profile: dict[str, Any]) -> Optional[str]:
+    parts = [
+        f"{label}: {profile[field]}"
+        for field, label in (
+            ("career_goal", "career goal"),
+            ("interests", "interests"),
+            ("background", "background"),
+            ("skill_level", "skill level"),
+            ("training_preference", "training preference"),
+        )
+        if profile.get(field)
+    ]
+    return ("Courses suitable for a learner with " + "; ".join(parts)) if parts else None
+
+
+def make_retrieve_node(mcp_client: RagMcpClient):
+    def retrieve_node(state: RexAssistantState) -> dict[str, Any]:
+        text = state["user_input"]
+
+        if state["answer_mode"] == MODE_RECOMMENDATION:
+            retrieval_query = _recommendation_query(state.get("profile") or {})
+        elif (
+            state.get("active_topic")
+            and state["active_topic"] != text
+            and not names_a_course(text)
+        ):
+            # Follow-up without a course name: search it in the context
+            # of the course discussed before.
+            retrieval_query = f"{text} (about: {state['active_topic']})"
+        elif is_catalogue_listing(text):
+            retrieval_query = f"{text}. {CATALOGUE_LISTING_HINT}"
+        else:
+            retrieval_query = None
+
+        try:
+            # The only route to the knowledge base: the MCP tool. It
+            # returns evidence and source metadata, never an answer.
+            evidence = mcp_client.search_knowledge_base(
+                question=text, retrieval_query=retrieval_query
+            )
+        except Exception as exc:
+            evidence = {"status": "error", "chunks": [], "error": f"{type(exc).__name__}: {exc}"}
+
+        if not isinstance(evidence, dict) or "status" not in evidence:
+            evidence = {"status": "error", "chunks": [], "error": "Unexpected tool response."}
+
+        return {"evidence": evidence}
+
+    return retrieve_node
+
+
+def _invoke_text(llm, messages: list) -> str:
+    """The model's reply text, or "" when the call fails."""
+    try:
+        reply = llm.invoke(messages)
+        return str(getattr(reply, "content", "") or "").strip()
+    except Exception:
+        logger.exception("Answer generation failed")
+        return ""
+
+
+def generate_answer(
+    llm,
+    evidence: dict[str, Any],
+    language: str,
+    mode: str = MODE_QUESTION,
+    profile: Optional[dict[str, Any]] = None,
+    declined: Optional[list[str]] = None,
+    history: Optional[list[dict[str, str]]] = None,
+) -> dict[str, Any]:
+    """
+    REX writes its answer from the retrieved evidence.
+
+    1. No usable evidence (empty index, no results, retrieval error):
+       a fixed bilingual message, and the LLM is not called.
+    2. Number the retrieved chunks so the answer can cite [1], [2]...
+    3. Build the prompt: grounding rules, reply language, recent turns,
+       the recommendation task (profile + course layout) when
+       recommending, the evidence, and the learner's original question.
+    4. Call the chat model.
+    5. Recommendations only: apply REX's course checks to the answer.
+
+    Returns {"answer", "sources", "status"}; status is "answered" or the
+    reason no answer was generated ("no_results", "empty_index",
+    "unavailable", "no_usable_evidence", "generation_failed").
+    """
+    fallback = fallback_key(evidence)
+    if fallback:
+        return {"answer": message(fallback, language), "sources": [], "status": fallback}
+
+    context, sources = evidence_context(evidence.get("chunks") or [])
+    if not context:
+        return {"answer": message("no_usable_evidence", language), "sources": [],
+                "status": "no_usable_evidence"}
+
+    recommending = mode == MODE_RECOMMENDATION
+    messages = build_messages(
+        evidence.get("question", ""), context, language, history,
+        task=recommendation_task(profile, declined) if recommending else None,
+    )
+
+    answer = _invoke_text(llm, messages)
+
+    # The local model sometimes drifts into Chinese mid-answer: ask once
+    # more with an explicit reminder, then remove any that remains.
+    if FOREIGN_SCRIPT.search(answer):
+        retry = _invoke_text(llm, [*messages, HumanMessage(content=LANGUAGE_REMINDER[language])])
+        answer = retry if retry and not FOREIGN_SCRIPT.search(retry) else answer
+        answer = re.sub(r"[ \t]{2,}", " ", FOREIGN_SCRIPT.sub(" ", answer)).strip()
+
+    if not answer:
+        return {"answer": message("generation_failed", language), "sources": [],
+                "status": "generation_failed"}
+
+    if recommending:
+        answer = check_recommendation(answer, context, profile, language)
+
+    return {"answer": answer, "sources": sources, "status": "answered"}
+
+
+def make_generate_node(model: str):
+    def generate_node(state: RexAssistantState) -> dict[str, Any]:
+        language = state.get("response_language") or "en"
+        evidence = state["evidence"]
+        mode = state["answer_mode"]
+        profile = state.get("profile") or {}
+        declined = state.get("declined_fields") or []
+
+        written = generate_answer(
+            _get_llm(model), evidence, language,
+            mode=mode, profile=profile, declined=declined,
+            history=state.get("history"),
+        )
+
+        response = written["answer"]
+        updates: dict[str, Any] = {
+            "rag_result": {
+                "answer": written["answer"],
+                "sources": written["sources"],
+                "status": written["status"],
+                "error": evidence.get("error"),
+                "translation": evidence.get("translation"),
+            },
+        }
+
+        if mode == MODE_RECOMMENDATION and written["status"] == "answered":
+            missing = discovery.missing_fields(profile, [])
+            if missing:
+                labels = ", ".join(discovery.field_label(f, language) for f in missing)
+                response += "\n\n" + _t("incomplete", language).format(fields=labels)
+
+            updates["mode"] = None
+            updates["pending_field"] = None
+
+            if (
+                not state.get("lead_captured")
+                and state.get("consent") is None
+                and any(profile.get(f) for f in discovery.REQUIRED_FIELDS)
+            ):
+                response += "\n\n" + _t("consent", language)
+                updates["consent_pending"] = True
+
+        elif (
+            state.get("mode") == DISCOVERY
+            and state.get("pending_field")
+            and written["status"] == "answered"
+        ):
+            # A direct question in the middle of discovery: answer it,
+            # then show where the questionnaire will resume.
+            response += "\n\n" + _t("resume", language) + discovery.question_for(
+                state["pending_field"], language
+            )
+
+        updates["response"] = response
+        return updates
+
+    return generate_node
 
 
 def make_handle_consent_node(lead_store: LeadStore):
     def handle_consent_node(state: RexAssistantState) -> dict[str, Any]:
-        response_language = state.get("response_language") or "en"
+        language = state.get("response_language") or "en"
         decision = _detect_consent(state["user_input"])
 
         if decision is True:
-            lead_store.save_lead({"profile": state.get("profile", {})})
-
-            response = (
-                "تم حفظ بياناتك بنجاح، وسنتواصل معك قريبًا. شكرًا لك!"
-                if response_language == "ar"
-                else "Thanks! I've saved your details for follow-up."
-            )
+            # The only place learner data is persisted, and only the
+            # profile fields (no conversation text).
+            profile = {
+                field: value
+                for field, value in (state.get("profile") or {}).items()
+                if field in discovery.ALL_FIELDS and value
+            }
+            try:
+                lead_store.save_lead({"profile": profile})
+            except Exception:
+                return {
+                    "consent": None,
+                    "consent_pending": False,
+                    "lead_captured": False,
+                    "response": _t("save_failed", language),
+                }
             return {
                 "consent": True,
                 "consent_pending": False,
                 "lead_captured": True,
-                "response": response,
+                "response": _t("saved", language),
             }
 
         if decision is False:
-            response = (
-                "تم تجاهل الطلب، ولن يتم حفظ أي معلومات شخصية."
-                if response_language == "ar"
-                else (
-                    "No problem, I won't save any personal information."
-                )
-            )
             return {
                 "consent": False,
                 "consent_pending": False,
                 "lead_captured": False,
-                "response": response,
+                "response": _t("not_saved", language),
             }
 
         # Ambiguous reply: ask again instead of guessing consent.
-        response = (
-            "عذرًا، هل توافق على حفظ بياناتك للمتابعة؟ (نعم / لا)"
-            if response_language == "ar"
-            else "Sorry, could you confirm with yes or no?"
-        )
-        return {"consent_pending": True, "response": response}
+        return {"consent_pending": True, "response": _t("confirm", language)}
 
     return handle_consent_node
 
 
 def build_graph(
     lead_store: LeadStore,
-    model: str = "qwen2.5:3b",
+    model: str = REX_DEFAULT_MODEL,
     mcp_client: Optional[RagMcpClient] = None,
 ):
     """
     Build and compile Agent 1's LangGraph workflow.
 
-    Args:
-        lead_store: Where consented leads are saved (see lead_store.py).
-        model: Ollama chat model used for profile extraction and
-            follow-up questions. Knowledge-base answers continue to use
-            whatever model the RAG MCP server is configured with.
-        mcp_client: Optional pre-built RagMcpClient, mainly for tests
-            that want to inject a mock. Defaults to a real client that
-            launches agents/rag_mcp_server.py as a subprocess on first
-            use and keeps that connection open across turns.
-
-    Returns:
-        (compiled_graph, mcp_client) -- the caller should keep the
-        mcp_client reference to call .close() on shutdown.
+    Returns (compiled_graph, mcp_client); call mcp_client.close() on
+    shutdown. mcp_client defaults to a real client that starts
+    agents/rag_mcp_server.py on first use.
     """
     mcp_client = mcp_client or RagMcpClient()
 
     graph = StateGraph(RexAssistantState)
 
     graph.add_node("detect_language", make_detect_language_node())
-    graph.add_node("update_profile", make_update_profile_node(model))
-    graph.add_node("ask_followup", make_ask_followup_node(model))
-    graph.add_node("rag_answer", make_rag_answer_node(mcp_client))
+    graph.add_node("understand", make_understand_node(model))
+    graph.add_node("ask_question", make_ask_question_node())
+    graph.add_node("general", make_general_node())
+    graph.add_node("retrieve", make_retrieve_node(mcp_client))
+    graph.add_node("generate", make_generate_node(model))
     graph.add_node("handle_consent", make_handle_consent_node(lead_store))
 
     graph.set_entry_point("detect_language")
-
     graph.add_conditional_edges(
         "detect_language",
         route_after_language,
-        {
-            "update_profile": "update_profile",
-            "handle_consent": "handle_consent",
-        },
+        {"understand": "understand", "handle_consent": "handle_consent"},
     )
-
     graph.add_conditional_edges(
-        "update_profile",
-        route_after_profile,
-        {
-            "ask_followup": "ask_followup",
-            "rag_answer": "rag_answer",
-        },
+        "understand",
+        route_after_understand,
+        {"ask_question": "ask_question", "retrieve": "retrieve", "general": "general"},
     )
-
-    graph.add_edge("ask_followup", END)
-    graph.add_edge("rag_answer", END)
+    graph.add_edge("retrieve", "generate")
+    graph.add_edge("ask_question", END)
+    graph.add_edge("general", END)
+    graph.add_edge("generate", END)
     graph.add_edge("handle_consent", END)
 
     return graph.compile(), mcp_client

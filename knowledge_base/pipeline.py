@@ -1,4 +1,6 @@
 
+import argparse
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -7,14 +9,21 @@ from knowledge_base.file_loader import discover_files
 from knowledge_base.parsers import parse_document
 from knowledge_base.cleaner import (
     clean_text,
+    is_usable_text,
     remove_repeated_headers_footers,
+    unwrap_lines,
 )
-from knowledge_base.chunker import chunk_document
+from knowledge_base.chunker import (
+    CHUNK_STRATEGIES,
+    DEFAULT_MAX_CHARS,
+    STRATEGY_AUTO,
+    chunk_document,
+)
 from knowledge_base.metadata_extractor import (
     extract_metadata,
     save_metadata_json,
 )
-from knowledge_base.embedding_service import embed_texts
+from knowledge_base.embedding_service import DEFAULT_MODEL_NAME, embed_texts
 from knowledge_base.vector_store import VectorStore
 
 
@@ -30,8 +39,11 @@ DEFAULT_MANIFEST_PATH = (
 
 
 def _normalize_source(source: str | Path) -> str:
-    """Return a consistent absolute document path."""
-    return str(Path(source).resolve())
+    """Return a consistent absolute document path (relative = project-relative)."""
+    path = Path(source)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return str(path.resolve())
 
 
 def _relative_source(source: str | Path) -> str:
@@ -113,29 +125,42 @@ def _preserve_failed_metadata(
 def _process_document(
     file_path: str | Path,
     max_chars: int,
+    strategy: str = STRATEGY_AUTO,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Run the existing document-processing components in sequence."""
-    source = _normalize_source(file_path)
+    # Stored with a project-relative path: portable across machines and
+    # never exposing a local filesystem layout. Old absolute-path vectors
+    # are still found and replaced by _delete_source_vectors.
+    source = _relative_source(file_path)
 
     document = parse_document(file_path)
     document["source"] = source
+    is_pdf = document.get("file_type") == ".pdf"
 
     cleaned_pages = [
         {
             **page,
-            "text": clean_text(page["text"]),
+            "text": clean_text(unwrap_lines(page["text"]) if is_pdf else page["text"]),
         }
         for page in document["pages"]
     ]
 
     document["pages"] = remove_repeated_headers_footers(cleaned_pages)
 
-    chunks = chunk_document(document, max_chars=max_chars)
+    if not is_usable_text("\n".join(page["text"] for page in document["pages"])):
+        # A scanned PDF without a text layer, an empty sheet, or a broken
+        # extraction: report it instead of indexing nothing or garbage.
+        raise ValueError("No usable text could be extracted from this document")
+
+    chunks = chunk_document(document, max_chars=max_chars, strategy=strategy)
 
     metadata_records = []
 
     for chunk in chunks:
         chunk["source"] = source
+        chunk["document_id"] = source
+        chunk["embedding_model"] = DEFAULT_MODEL_NAME
+        chunk["content_hash"] = hashlib.sha256(chunk["text"].encode("utf-8")).hexdigest()[:16]
 
         metadata = extract_metadata(chunk)
         chunk["extracted_metadata"] = metadata
@@ -162,15 +187,23 @@ def _delete_source_vectors(
 def ingest_directory(
     directory: str | Path = DEFAULT_DOCUMENTS_DIR,
     vector_store: VectorStore | None = None,
-    max_chars: int = 2500,
+    max_chars: int = DEFAULT_MAX_CHARS,
     metadata_path: str | Path = DEFAULT_METADATA_PATH,
     manifest_path: str | Path = DEFAULT_MANIFEST_PATH,
+    strategy: str = STRATEGY_AUTO,
 ) -> dict[str, Any]:
     """
     Coordinate document ingestion using the existing knowledge-base modules.
 
     Components handle their own processing logic. This function coordinates
     processing, embedding, vector replacement, and ingestion bookkeeping.
+
+    Re-running it is safe: each processed document's old vectors are
+    replaced (no duplicates, no stale chunks when a document shrinks),
+    documents removed from the directory since the last run (tracked in
+    the manifest) lose their vectors, and vectors of other collections
+    sharing the store (e.g. approved web research, which has its own
+    manifest) are never touched.
     """
     directory = Path(directory).resolve()
     metadata_path = Path(metadata_path).resolve()
@@ -216,6 +249,7 @@ def ingest_directory(
             chunks, metadata_records = _process_document(
                 file_path,
                 max_chars,
+                strategy,
             )
 
             all_chunks.extend(chunks)
@@ -292,3 +326,27 @@ def ingest_directory(
     )
 
     return summary
+
+
+def main(argv: list[str] | None = None) -> int:
+    """
+    python -m knowledge_base.pipeline [--dir DIR] [--strategy auto]
+
+    Ingests (or re-ingests) a document directory into the vector store.
+    Safe to repeat: see ingest_directory().
+    """
+    parser = argparse.ArgumentParser(description="Ingest documents into the REX knowledge base.")
+    parser.add_argument("--dir", default=str(DEFAULT_DOCUMENTS_DIR), help="document directory")
+    parser.add_argument("--store", default=None, help="vector store directory (default: knowledge_base/vector_db)")
+    parser.add_argument("--strategy", default=STRATEGY_AUTO, choices=CHUNK_STRATEGIES)
+    parser.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
+    args = parser.parse_args(argv)
+
+    store = VectorStore(persist_directory=args.store) if args.store else None
+    summary = ingest_directory(args.dir, vector_store=store, max_chars=args.max_chars, strategy=args.strategy)
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return 1 if summary["files_failed"] else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

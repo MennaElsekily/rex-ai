@@ -1,4 +1,3 @@
-
 import json
 from pathlib import Path
 
@@ -6,7 +5,13 @@ from agents.orchestrator import Orchestrator
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = PROJECT_ROOT / "data"
+DATA_DIR = (
+    PROJECT_ROOT
+    / "knowledge_base"
+    / "datasets"
+    / "andalusia_catalogue"
+)
+
 
 # Arabic Unicode character range
 def contains_arabic(value):
@@ -31,6 +36,9 @@ def test_arabic_in_data_files():
 
         has_arabic = contains_arabic(data)
         print(f"{file_path.name}: Arabic text found = {has_arabic}")
+
+        if file_path.name == "eval_set.json":
+            assert has_arabic, f"No Arabic text found in {file_path}"
 
 
 def test_arabic_request_routing():

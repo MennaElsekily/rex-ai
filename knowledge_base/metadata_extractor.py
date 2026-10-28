@@ -81,6 +81,57 @@ def extract_keywords(
     ]
 
 
+_FIELD_LINE = re.compile(
+    r"^\s*(?:[-*•]\s*)?([A-Za-z؀-ۿ][A-Za-z0-9؀-ۿ _/()&-]{0,48}?)\s*[:：]\s*(\S.{0,300}?)\s*$"
+)
+_NUMBER = re.compile(r"^-?\d+(?:\.\d+)?$")
+_RESERVED = {
+    "source", "page", "page_end", "section", "section_path", "record_id",
+    "chunk_id", "chunk_strategy", "file_type", "filename", "document_id",
+}
+
+
+def normalize_field_name(name: str) -> str:
+    """'Delivery Mode' -> 'delivery_mode'; Arabic letters are kept."""
+    key = re.sub(r"[^0-9A-Za-z؀-ۿ]+", "_", str(name).strip().casefold()).strip("_")
+    return key[:40]
+
+
+def normalize_field_value(value: Any) -> Any:
+    """Numbers stay numbers ("4500" -> 4500); everything else is a trimmed string."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        return value
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    if not text:
+        return None
+    if _NUMBER.match(text):
+        return float(text) if "." in text else int(text)
+    return text[:500]
+
+
+def extract_explicit_fields(text: str) -> dict[str, Any]:
+    """
+    "Key: value" lines written in the text itself (e.g. "Level: Beginner",
+    "Duration: 6 weeks"). Field names are discovered from the document,
+    never preselected, and nothing is inferred beyond what is written.
+    """
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+
+    fields: dict[str, Any] = {}
+    for line in text.splitlines():
+        match = _FIELD_LINE.match(line)
+        if not match or match.group(1).strip().count(" ") > 4:
+            continue
+        key = normalize_field_name(match.group(1))
+        value = normalize_field_value(match.group(2))
+        if key and value is not None and key not in fields:
+            fields[key] = value
+    return fields
+
+
 def extract_metadata(chunk: dict[str, Any]) -> dict[str, Any]:
     """
     Extract technical metadata and generic, rule-based content signals.
@@ -100,12 +151,16 @@ def extract_metadata(chunk: dict[str, Any]) -> dict[str, Any]:
     source_path = Path(source) if source else None
 
     metadata: dict[str, Any] = {
-        "document_id": source,
+        "document_id": chunk.get("document_id") or source,
         "chunk_id": chunk.get("chunk_id"),
         "filename": source_path.name if source_path else None,
         "file_type": chunk.get("file_type"),
         "page": chunk.get("page"),
+        "page_end": chunk.get("page_end"),
         "section": chunk.get("section"),
+        "section_path": chunk.get("section_path"),
+        "record_id": chunk.get("record_id"),
+        "chunk_strategy": chunk.get("chunk_strategy"),
         "data_source": source,
         "dates": extract_dates(text),
         "urls": extract_urls(text),
@@ -113,29 +168,21 @@ def extract_metadata(chunk: dict[str, Any]) -> dict[str, Any]:
         "extraction_method": "rule_based",
     }
 
-    # Capture explicit key-value patterns when documents contain them.
-    # The field names are discovered from the text, not preselected
-    # academy-specific fields.
-    explicit_fields = {}
+    # Explicit fields: structured record fields and fields inherited from
+    # the enclosing sections (set by the parser/chunker), then "key: value"
+    # lines in this chunk's own text. Field names come from the data.
+    explicit_fields: dict[str, Any] = {}
+    for key, value in (chunk.get("fields") or {}).items():
+        name, normalized = normalize_field_name(key), normalize_field_value(value)
+        if name and normalized is not None:
+            explicit_fields[name] = normalized
+    for key, value in extract_explicit_fields(text).items():
+        explicit_fields.setdefault(key, value)
 
-    for line in text.splitlines():
-        match = re.match(
-            r"^\s*([A-Za-z][A-Za-z0-9 _/-]{0,60})\s*:\s*(.*?)\s*$",
-            line,
-        )
-
-        if match:
-            field_name = re.sub(
-                r"\s+",
-                "_",
-                match.group(1).strip().lower(),
-            )
-            field_value = match.group(2).strip()
-
-            if field_value:
-                explicit_fields[field_name] = field_value
-
-    metadata["explicit_fields"] = explicit_fields
+    metadata["explicit_fields"] = {
+        key: value for key, value in explicit_fields.items() if key not in _RESERVED
+    }
+    explicit_fields = metadata["explicit_fields"]
 
     metadata["extraction_status"] = (
         "partial"
