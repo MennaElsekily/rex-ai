@@ -1,0 +1,67 @@
+{
+  "dataset": "Andalusia Academy frequently asked questions",
+  "data_status": "Synthetic demonstration data",
+  "updated": "2026-10-27",
+  "faqs": [
+    {
+      "id": "FAQ-01",
+      "question": "How do I register for a course?",
+      "answer": "Choose a course and intake, complete the online registration form, and pay the fee or the first instalment. Your seat is confirmed after payment."
+    },
+    {
+      "id": "FAQ-02",
+      "question": "Can I pay the course fee in instalments?",
+      "answer": "Yes for most courses. The number of instalments is listed for each course; the first payment is due before the course starts."
+    },
+    {
+      "id": "FAQ-03",
+      "question": "What is the refund policy?",
+      "answer": "You can get a full refund up to 7 days before the start date, and a 50% refund until the end of the first week. No refunds after the first week."
+    },
+    {
+      "id": "FAQ-04",
+      "question": "Do I get a certificate?",
+      "answer": "Yes. Learners who attend at least 80% of sessions and pass the final project receive an Andalusia Academy certificate of completion. Courses are not officially accredited."
+    },
+    {
+      "id": "FAQ-05",
+      "question": "Are the courses accredited?",
+      "answer": "No. Andalusia Academy certificates are certificates of completion. Some courses are designed with industry frameworks in mind, but they are not officially accredited."
+    },
+    {
+      "id": "FAQ-06",
+      "question": "How do online classes work?",
+      "answer": "Online classes are live sessions on the academy's virtual classroom at fixed times. Recordings are available for 30 days after each session."
+    },
+    {
+      "id": "FAQ-07",
+      "question": "What if I miss a session?",
+      "answer": "Online sessions are recorded. For on-campus sessions you can attend the same session in another group when seats are available."
+    },
+    {
+      "id": "FAQ-08",
+      "question": "Is there a placement test?",
+      "answer": "Intermediate and advanced courses may require a short online placement test if you have not completed the listed prerequisite course."
+    },
+    {
+      "id": "FAQ-09",
+      "question": "What language are the courses taught in?",
+      "answer": "Each course lists its language. Most are taught in Arabic and English; some advanced courses are taught in English."
+    },
+    {
+      "id": "FAQ-10",
+      "question": "Do I need my own laptop?",
+      "answer": "Yes for online courses. On-campus courses provide lab computers, but a personal laptop is recommended for practice."
+    },
+    {
+      "id": "FAQ-11",
+      "question": "Can companies enrol their teams?",
+      "answer": "Yes. Corporate groups of 8 or more can request a private class and a tailored schedule through the admissions office."
+    },
+    {
+      "id": "FAQ-12",
+      "question": "Do you help with jobs after the course?",
+      "answer": "Learners get a portfolio review and CV workshop. The academy does not guarantee job placement."
+    }
+  ]
+}
