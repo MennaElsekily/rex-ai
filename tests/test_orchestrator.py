@@ -231,18 +231,20 @@ def test_course_rule_respects_existing_priorities(text, expected_plan):
 def test_language_is_detected_before_routing():
     router = _router_with_mock_agents()
     calls = []
-    real_detect = Orchestrator.detect_language
+    # Detection is done by _resolve_language (detection + conversation
+    # memory + explicit preference); it must still run before routing.
+    real_resolve = router._resolve_language
     real_plan = router._make_plan
 
-    def spy_detect(text):
+    def spy_resolve(text, context):
         calls.append("detect")
-        return real_detect(text)
+        return real_resolve(text, context)
 
     def spy_plan(text):
         calls.append("route")
         return real_plan(text)
 
-    with patch.object(Orchestrator, "detect_language", staticmethod(spy_detect)), \
+    with patch.object(router, "_resolve_language", spy_resolve), \
             patch.object(router, "_make_plan", spy_plan):
         router.handle_request(ARABIZI_COURSE_1)
 
@@ -297,3 +299,59 @@ def test_arabic_request_for_unregistered_agent_still_errors():
 
     assert response["status"] == "error"
     assert "not implemented" in response["error_message"]
+
+
+# --------------------------------------------------------------------
+# Phase 1 (two-mode REX): one detector, stable conversation language
+# --------------------------------------------------------------------
+
+def _language_router():
+    router = Orchestrator()
+    seen = []
+
+    def rex(request):
+        seen.append(request["context"]["language"])
+        return {"request_id": request["request_id"], "agent_name": "rex_assistant", "status": "success",
+                "result": {}, "error_message": None}
+
+    router.register_agent("rex_assistant", rex, continuation_check=lambda probe: True)
+    return router, seen
+
+
+def test_short_replies_keep_the_conversation_language():
+    router, seen = _language_router()
+    for text in ("ما هي الدورات المتاحة؟", "ok", "5000", "yes"):
+        router.handle_request(text, context={"conversation_id": "c1"})
+    assert seen == ["ar", "ar", "ar", "ar"]
+
+
+def test_a_clear_switch_changes_the_language_and_conversations_are_separate():
+    router, seen = _language_router()
+    router.handle_request("ما هي الدورات المتاحة؟", context={"conversation_id": "c1"})
+    router.handle_request("ok", context={"conversation_id": "c2"})        # no history: English
+    router.handle_request("What courses are available?", context={"conversation_id": "c1"})
+    router.handle_request("ok", context={"conversation_id": "c1"})
+    assert seen == ["ar", "en", "en", "en"]
+
+
+def test_explicit_preference_wins_and_no_conversation_id_has_no_memory():
+    router, seen = _language_router()
+    router.handle_request("ما هي الدورات المتاحة؟", context={"conversation_id": "c1", "preferred_language": "en"})
+    router.handle_request("ما هي الدورات المتاحة؟")
+    router.handle_request("ok")
+    assert seen == ["en", "ar", "en"]
+
+
+def test_arabizi_short_reply_is_arabic_and_memory_is_bounded():
+    router, seen = _language_router()
+    router.handle_request("aywa", context={"conversation_id": "c1"})
+    assert seen == ["ar"]
+    router.MAX_REMEMBERED_CONVERSATIONS = 3
+    for n in range(10):
+        router.handle_request("What courses are available?", context={"conversation_id": f"x{n}"})
+    assert len(router._conversation_languages) == 3
+
+
+@pytest.mark.parametrize("text", ["عايز ترشيح كورس", "3ayez tarshee7 course", "3ayez a3raf el courses el mota7a"])
+def test_egyptian_and_arabizi_course_requests_reach_rex(text):
+    assert Orchestrator()._make_plan(text) == ["rex_assistant"]

@@ -72,6 +72,8 @@ def test_answer_is_written_from_evidence_with_sources():
         "reference": 1, "source": "04_Flutter.pdf", "page": 3,
         "section": "Entry requirements", "section_path": None, "record_id": None,
         "chunk_id": 12,
+        # Added compatibly (two-mode REX, Phase 3): the passage's course.
+        "course_id": None, "course_name": None,
     }]
     assert "Entry requirements: basic computer literacy." in llm.user
     assert "What are the entry requirements?" in llm.user
@@ -299,3 +301,119 @@ def test_course_scope_and_meaning_rules_are_in_the_prompt():
 
     assert "Use only" in llm.system and "do not apply" in llm.system
     assert "refund policy" in llm.system
+
+
+# --------------------------------------------------------------------
+# Two-mode REX, Phase 3: one generator, mode tasks, honest sources
+# --------------------------------------------------------------------
+
+COURSES = [{"course_id": "DA-301", "course_name": "Python for Data Analysis"},
+           {"course_id": "AI-101", "course_name": "Introduction to AI and Python"}]
+
+
+def _course_evidence(question="What does the Python course cover?"):
+    chunks = [
+        _chunk("Python for Data Analysis covers pandas and charts.", 1,
+               course_id="DA-301", course_name="Python for Data Analysis"),
+        _chunk("Introduction to AI and Python covers Python basics.", 2,
+               course_id="AI-101", course_name="Introduction to AI and Python"),
+        _chunk("Refunds within 14 days.", 3),
+    ]
+    return {**_evidence(chunks=chunks, question=question), "courses": COURSES}
+
+
+def test_both_modes_use_one_generator_with_their_own_task():
+    question_llm, recommend_llm = FakeLLM("Pandas [1]."), FakeLLM("**Python for Data Analysis** [1]")
+
+    generate_answer(question_llm, _course_evidence(), "en", mode=MODE_QUESTION)
+    generate_answer(recommend_llm, _course_evidence(), "en", mode=MODE_RECOMMENDATION,
+                    profile={"career_goal": "data analyst"})
+
+    assert "ANSWER TASK" in question_llm.user and "RECOMMENDATION TASK" not in question_llm.user
+    assert "RECOMMENDATION TASK" in recommend_llm.user and "ANSWER TASK" not in recommend_llm.user
+    assert question_llm.system == recommend_llm.system  # the same grounding rules for both
+
+
+def test_the_model_sees_which_courses_the_evidence_covers():
+    llm = FakeLLM("Which one do you mean?")
+
+    generate_answer(llm, _course_evidence(), "en")
+
+    assert "COURSES IN THE EVIDENCE: DA-301 Python for Data Analysis; AI-101 Introduction to AI and Python" in llm.user
+    assert "ask which one they mean" in llm.user
+
+
+def test_sources_are_the_cited_references_only():
+    result = generate_answer(FakeLLM("It covers pandas [1] and refunds take 14 days [3] [9]."), _course_evidence(), "en")
+
+    assert [s["reference"] for s in result["sources"]] == [1, 3]  # [9] does not exist
+    assert result["sources"][0]["course_name"] == "Python for Data Analysis"
+
+
+def test_without_citations_sources_are_the_courses_the_answer_names():
+    answer = "Which one do you mean: Python for Data Analysis or Introduction to AI and Python?"
+
+    result = generate_answer(FakeLLM(answer), _course_evidence(), "en")
+
+    assert [s["reference"] for s in result["sources"]] == [1, 2]
+
+
+@pytest.mark.parametrize("answer", [
+    "The documents do not contain information about the weather in Cairo.",
+    "There is no mention of laptop provision in any of the given documents.",
+])
+def test_a_not_found_answer_lists_no_sources(answer):
+    result = generate_answer(FakeLLM(answer), _course_evidence("What is the weather?"), "en")
+
+    assert result["status"] == "answered" and result["sources"] == []
+
+
+def test_recommendations_keep_their_cited_sources_and_checks():
+    llm = FakeLLM("**Python for Data Analysis** [1]\n- Why it fits you: data skills.\n- Level: Beginner\n"
+                  "- Delivery: not stated in the catalogue\n- Fees: not stated in the catalogue")
+
+    result = generate_answer(llm, _course_evidence(), "en", mode=MODE_RECOMMENDATION,
+                             profile={"career_goal": "data analyst", "skill_level": "beginner"})
+
+    assert [s["reference"] for s in result["sources"]] == [1]
+    assert "Python for Data Analysis" in result["answer"]
+
+
+def test_evidence_without_course_metadata_still_works():
+    evidence = _evidence()  # no "courses" key (older tool result)
+    llm = FakeLLM()
+
+    result = generate_answer(llm, evidence, "en")
+
+    assert result["status"] == "answered" and "COURSES IN THE EVIDENCE: none named" in llm.user
+
+
+@pytest.mark.parametrize("answer, expected", [
+    ("The given context does not contain information about whether the Flutter course provides a free laptop. [1], [2]",
+     "The given context does not contain information about whether the Flutter course provides a free laptop."),
+    ("لا تحتوي المستندات على معلومات عن اللابتوب المجاني [1].", "لا تحتوي المستندات على معلومات عن اللابتوب المجاني."),
+])
+def test_a_short_absence_answer_loses_its_citations_and_sources(answer, expected):
+    result = generate_answer(FakeLLM(answer), _course_evidence("Is there a free laptop?"), "en")
+
+    assert result["answer"] == expected and result["sources"] == []
+
+
+@pytest.mark.parametrize("answer", [
+    "Python for Data Analysis lasts 8 weeks [1]; the fee is not stated in the documents.",   # has a fact (a number)
+    "The course covers pandas [1]. " + "It is practical. " * 30 + "Seats are not mentioned.",  # long: a real answer
+])
+def test_real_answers_mentioning_a_missing_detail_keep_their_sources(answer):
+    result = generate_answer(FakeLLM(answer), _course_evidence(), "en")
+
+    assert [s["reference"] for s in result["sources"]] == [1] and "[1]" in result["answer"]
+
+
+def test_recommendations_are_never_treated_as_absence_answers():
+    # The absence guard is for direct questions only; recommendations have
+    # their own checks (check_recommendation) and keep their cited sources.
+    llm = FakeLLM("Python for Data Analysis is not mentioned as online, but it teaches pandas [1].")
+
+    result = generate_answer(llm, _course_evidence(), "en", mode=MODE_RECOMMENDATION, profile={"career_goal": "x"})
+
+    assert [s["reference"] for s in result["sources"]] == [1] and "[1]" in result["answer"]

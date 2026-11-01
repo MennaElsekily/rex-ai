@@ -4,7 +4,7 @@ from typing import Any, Optional
 
 from mcp.server.mcpserver import MCPServer
 
-from knowledge_base.evidence import EvidenceRetriever, safe_search
+from knowledge_base.evidence import EvidenceRetriever, safe_list_courses, safe_search
 
 # stdout carries the MCP protocol, so diagnostics go to stderr only.
 logging.basicConfig(level=logging.WARNING)
@@ -40,11 +40,15 @@ def search_knowledge_base(
         question, retrieval_query (text actually searched),
         query_language, translation ("not_needed" / "translated" /
         "failed"), translation_error,
-        chunks: [{reference, text, source (file name only), page,
+        chunks: [{reference, text, course_id, course_name (when the
+            metadata names the course), source (file name only), page,
             page_end, section, section_path, record_id, chunk_id,
             relevance_score, fields (structured fields of the source
             record or section, e.g. {"level": "Beginner"})}],
+        courses: the distinct [{course_id, course_name}] the chunks
+            belong to, in relevance order,
         error.
+        A malformed metadata_filter is reported as "invalid_request".
     """
     return safe_search(
         evidence,
@@ -52,6 +56,19 @@ def search_knowledge_base(
         retrieval_query=retrieval_query,
         metadata_filter=metadata_filter,
     )
+
+
+@mcp.tool()
+def list_courses() -> dict:
+    """
+    List the courses named in the indexed metadata (read-only).
+
+    Returns:
+        status: "ok", "empty_index" or "error".
+        courses: [{course_id, course_name}], sorted by course id.
+        error.
+    """
+    return safe_list_courses(evidence)
 
 
 if __name__ == "__main__":

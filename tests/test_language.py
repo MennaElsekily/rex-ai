@@ -272,3 +272,29 @@ def test_arabic_spelled_tech_names_are_kept_in_latin_script(arabic, latin):
 
 def test_tech_terms_only_match_whole_words():
     assert "Flutter" not in language.egyptian_to_msa("فلاترات")
+
+
+# --------------------------------------------------------------------
+# Phase 1 (two-mode REX): short Arabizi replies and request words
+# --------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", ["aywa", "Aiwa", "tamam", "msh 3aref", "la2", "3ayez tarshee7 course",
+                                  "3ayez a3raf el courses el mota7a"])
+def test_short_arabizi_replies_and_request_words_are_arabic(text):
+    assert language.looks_like_arabizi(text)
+    assert language.detect_conversation_language(text) == "ar"
+
+
+@pytest.mark.parametrize("text", ["mesh network", "ok", "yes", "Python", "Kam is my name"])
+def test_english_words_are_not_mistaken_for_arabizi(text):
+    # "mesh" is an English word and deliberately not an Arabizi cue.
+    assert not language.looks_like_arabizi(text)
+
+
+def test_new_arabizi_words_transliterate_for_matching():
+    assert language.transliterate_arabizi("3ayez tarshee7 course") == "عايز ترشيح كورس"
+    # The article "el" joins a known word (Phase 2: no stray "el" in the
+    # translated query); before an unknown word it is left alone.
+    assert language.transliterate_arabizi("el courses el mota7a") == "الكورسات المتاحه"
+    assert language.transliterate_arabizi("El Paso training") == "El Paso training"
+    assert language.transliterate_arabizi("el python course") == "el python كورس"

@@ -6,6 +6,7 @@ from uuid import uuid4
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
+from agents.multilingual import detect_conversation_language
 from agents.multilingual import detect_language as _detect_language
 from agents.course_intent import GENERAL, classify_course_intent
 from agents.text_utils import normalize_for_matching
@@ -136,6 +137,32 @@ class Orchestrator:
         )
 
         self.graph = graph.compile()
+        # The last confidently detected language per conversation_id, so a
+        # short reply ("ok", "5000", "yes") keeps the conversation's
+        # language instead of falling back to English. In memory, bounded.
+        self._conversation_languages: dict[str, str] = {}
+
+    MAX_REMEMBERED_CONVERSATIONS = 1000
+
+    def _resolve_language(self, user_input: str, context: dict[str, Any]) -> str:
+        """
+        An explicit UI choice first, then a confident detection of this
+        message (knowledge_base/language.py, the same detector REX uses),
+        then this conversation's previous language, then English.
+        """
+        if context.get("preferred_language") in ("ar", "en"):
+            return context["preferred_language"]
+        detected = detect_conversation_language(user_input)
+        conversation_id = context.get("conversation_id")
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            return detected or "en"
+        if detected is None:
+            return self._conversation_languages.get(conversation_id, "en")
+        self._conversation_languages.pop(conversation_id, None)  # most recent last
+        self._conversation_languages[conversation_id] = detected
+        while len(self._conversation_languages) > self.MAX_REMEMBERED_CONVERSATIONS:
+            self._conversation_languages.pop(next(iter(self._conversation_languages)))
+        return detected
 
     @staticmethod
     def detect_language(text: str) -> str:
@@ -189,12 +216,9 @@ class Orchestrator:
             )
 
         request_context = dict(context or {})
-        # An explicit UI language choice wins over per-message detection.
-        language = (
-            request_context.get("preferred_language")
-            if request_context.get("preferred_language") in ("ar", "en")
-            else self.detect_language(user_input)
-        )
+        # An explicit UI language choice wins over per-message detection;
+        # unclear short replies keep the conversation's language.
+        language = self._resolve_language(user_input, request_context)
         request_context["language"] = language
 
         request = {

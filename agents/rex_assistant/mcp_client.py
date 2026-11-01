@@ -51,3 +51,7 @@ class RagMcpClient(McpToolClient):
             "retrieval_query": retrieval_query,
             "metadata_filter": metadata_filter,
         })
+
+    def list_courses(self) -> dict[str, Any]:
+        """Call the list_courses MCP tool: the indexed courses (id and name)."""
+        return self.call_tool("list_courses", {})

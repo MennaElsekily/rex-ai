@@ -48,7 +48,20 @@ class RexAssistantState(TypedDict, total=False):
     # does it take?" can be searched in its context.
     active_topic: Optional[str]
 
+    # The course(s) under discussion ([{course_id, course_name}]): what a
+    # follow-up such as "How long is it?" is about. One entry = the
+    # selected course; several (after a comparison or a recommendation)
+    # = REX asks which one. Checked against the course list when read.
+    course_focus: list[dict[str, Any]]
+    # The open "Which course do you mean?": {"question", "candidates"}.
+    # Valid for the next turn only; any other reply drops it.
+    course_choice: Optional[dict[str, Any]]
+
     # Derived during this turn's graph run.
+    course_scope: list[dict[str, Any]]      # courses this answer is limited to
+    course_question: Optional[str]          # the question answered for them
+    course_options: list[dict[str, Any]]    # options offered this turn
+    course_post_match: bool                 # identify the course after retrieval
     detected_language: Optional[str]
     response_language: Optional[str]
     intent: str

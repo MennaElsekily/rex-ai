@@ -18,6 +18,7 @@ from knowledge_base.evidence import (
     STATUS_NO_RESULTS,
     STATUS_OK,
     EvidenceRetriever,
+    safe_list_courses,
     safe_search,
 )
 
@@ -97,7 +98,12 @@ def test_english_question_returns_structured_evidence(translator):
         "section_path": None,
         "record_id": None,
         "fields": {},
+        # Added compatibly (two-mode REX, Phase 2): the course, when the
+        # metadata names one -- this hit has no course metadata.
+        "course_id": None,
+        "course_name": None,
     }
+    assert result["courses"] == []
 
 
 def test_source_references_never_expose_filesystem_paths():
@@ -267,3 +273,113 @@ def test_unavailable_index_becomes_an_error_status():
 
     assert result["status"] == STATUS_ERROR
     assert result["question"] == "What courses are available?"
+
+
+# --------------------------------------------------------------------
+# Two-mode REX, Phase 2: course identity, filter validation, failures
+# --------------------------------------------------------------------
+
+def _course_hit(text, course_id=None, name=None, section_path=None, code=None):
+    metadata = {"source": "knowledge_base/documents/catalogue.pdf", "page": 2}
+    if course_id:
+        metadata["field_course_id"] = course_id
+    if code:
+        metadata["field_course_code"] = code
+    if name:
+        metadata["field_course_name"] = name
+    if section_path:
+        metadata["section_path"] = section_path
+    return _hit(text=text, metadata=metadata, source=metadata["source"])
+
+
+def test_chunks_name_their_course_and_results_list_the_courses():
+    evidence = _evidence([
+        _course_hit("Python for Data Analysis: 40 hours.", "DA-201", "Python for Data Analysis"),
+        _course_hit("Covers pandas and charts.", "DA-201", section_path="Python for Data Analysis > Topics"),
+        _course_hit("Python Programming Fundamentals: 30 hours.", None, "Python Programming Fundamentals",
+                    code="SW-101"),
+        _course_hit("Refunds within 14 days.", section_path="FAQ > Refunds"),
+    ])
+
+    result = evidence.search("How long is the Python course?")
+
+    chunks = result["chunks"]
+    assert (chunks[0]["course_id"], chunks[0]["course_name"]) == ("DA-201", "Python for Data Analysis")
+    # The name comes from the section path when only the id is indexed.
+    assert (chunks[1]["course_id"], chunks[1]["course_name"]) == ("DA-201", "Python for Data Analysis")
+    assert (chunks[2]["course_id"], chunks[2]["course_name"]) == ("SW-101", "Python Programming Fundamentals")
+    # No course metadata: nothing is guessed from the section path alone.
+    assert (chunks[3]["course_id"], chunks[3]["course_name"]) == (None, None)
+    assert result["courses"] == [
+        {"course_id": "DA-201", "course_name": "Python for Data Analysis"},
+        {"course_id": "SW-101", "course_name": "Python Programming Fundamentals"},
+    ]
+
+
+@pytest.mark.parametrize("metadata_filter", [
+    {"field_course_id": "DA-201"},
+    {"field_level": {"$in": ["Beginner", "Intermediate"]}},
+    {"$and": [{"field_department": "Data Analytics"}, {"field_fee_egp": {"$lte": 5000}}]},
+])
+def test_valid_metadata_filters_reach_the_retriever(metadata_filter):
+    evidence = _evidence([_hit()])
+
+    assert safe_search(evidence, "Courses?", metadata_filter=metadata_filter)["status"] == STATUS_OK
+    assert evidence.retriever.retrieve.call_args.kwargs["metadata_filter"] == metadata_filter
+
+
+@pytest.mark.parametrize("metadata_filter", [
+    {}, {"field_level": ["Beginner"]}, {"field_level": {"$like": "Beg%"}},
+    {"field_level": {"$in": []}}, {"$or": [{"a": 1}]}, {"$drop": 1}, {"field_level": {"$eq": {"x": 1}}},
+])
+def test_malformed_metadata_filters_are_invalid_requests_not_failures(metadata_filter):
+    evidence = _evidence([_hit()])
+
+    result = safe_search(evidence, "Courses?", metadata_filter=metadata_filter)
+
+    assert result["status"] == STATUS_INVALID_REQUEST and result["chunks"] == [] and result["courses"] == []
+    evidence.retriever.retrieve.assert_not_called()
+
+
+def test_course_list_reads_distinct_courses_from_the_metadata():
+    # Two-mode REX, Phase 4: the indexed courses, read-only.
+    evidence = _evidence()
+    evidence.retriever.vector_store.collection.get.return_value = {"metadatas": [
+        {"field_course_id": "DA-301", "section_path": "Python for Data Analysis > Fees"},
+        {"field_course_id": "DA-301", "field_course_name": "Python for Data Analysis"},
+        {"field_course_code": "AI-101", "section_path": "Introduction to AI and Python"},
+        {"section_path": "FAQ > Refunds"},   # no course
+        None,
+    ]}
+
+    result = evidence.list_courses()
+
+    assert result == {"status": STATUS_OK, "error": None, "courses": [
+        {"course_id": "AI-101", "course_name": "Introduction to AI and Python"},
+        {"course_id": "DA-301", "course_name": "Python for Data Analysis"},
+    ]}
+    evidence.retriever.vector_store.collection.get.assert_called_once_with(include=["metadatas"])
+
+
+def test_course_list_reports_an_empty_index_and_failures_safely():
+    assert _evidence(indexed=0).list_courses()["status"] == STATUS_EMPTY_INDEX
+
+    broken = _evidence()
+    broken.retriever.vector_store.collection.get.side_effect = RuntimeError(r"C:\secret\vector_db locked")
+    result = safe_list_courses(broken)
+
+    assert result == {"status": STATUS_ERROR, "courses": [], "error": "The course list is unavailable."}
+
+
+def test_every_status_has_the_same_keys():
+    keys = set(_evidence([_hit()]).search("Courses?"))
+    empty = _evidence([_hit()], indexed=0).search("Courses?")
+    no_results = _evidence([]).search("Courses?")
+    broken = _evidence([_hit()])
+    broken.retriever.retrieve.side_effect = RuntimeError(r"C:\secret\path failed")
+    failed = safe_search(broken, "Courses?")
+
+    assert empty["status"] == STATUS_EMPTY_INDEX and no_results["status"] == STATUS_NO_RESULTS
+    assert failed["status"] == STATUS_ERROR and "secret" not in failed["error"]
+    for result in (empty, no_results, failed):
+        assert set(result) == keys

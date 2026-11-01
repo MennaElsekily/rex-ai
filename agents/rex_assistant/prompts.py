@@ -90,6 +90,103 @@ Rules:
 """.strip()
 
 
+# Mode 2 (direct course questions). Placed right before the evidence like
+# the recommendation task, where a small model follows it most reliably.
+COURSE_QUESTION_TASK = """
+ANSWER TASK:
+The user asked a direct question about the academy's courses or policies.
+- Answer it directly and briefly (a few sentences or a short list).
+- Put the reference label of the supporting passage, such as [1], right
+  after each fact you state.
+- If the context does not establish the answer, say exactly what could not
+  be found, without a reference label (a passage that does not state
+  something cannot support it). Do not answer from general knowledge.
+- If the question could refer to more than one of the courses listed under
+  COURSES IN THE EVIDENCE and the user did not name one, list those courses
+  briefly and ask which one they mean instead of choosing one.
+""".strip()
+
+
+def course_question_task(selected_courses: Optional[list[dict[str, Any]]] = None) -> str:
+    """
+    COURSE_QUESTION_TASK, plus the course(s) the question is about when
+    REX has identified them (named, chosen by the learner, or the course
+    of a follow-up such as "How long is it?").
+    """
+    labels = [label for label in (_course_label(c) for c in selected_courses or []) if label]
+    if not labels:
+        return COURSE_QUESTION_TASK
+    which = "this course" if len(labels) == 1 else "these courses"
+    return (
+        f"{COURSE_QUESTION_TASK}\n- The question is about: {'; '.join(labels)}. Answer about "
+        f"{which} only, from its passages and the general academy passages; do not "
+        "ask which course they mean."
+    )
+
+
+def _course_label(course: dict[str, Any]) -> str:
+    name = course.get("course_name") or ""
+    code = course.get("course_id") or ""
+    return f"{code} {name}".strip() if code and code not in name else (name or code)
+
+
+def courses_block(courses: Optional[list[dict[str, Any]]]) -> str:
+    """The distinct courses the retrieved passages are about (from the RAG tool)."""
+    names = []
+    for course in courses or []:
+        label = _course_label(course)
+        if label and label not in names:
+            names.append(label)
+    return "COURSES IN THE EVIDENCE: " + ("; ".join(names) if names else "none named")
+
+
+_CITATION = re.compile(r"\[(\d{1,3})\]")
+_CITATION_LIST = re.compile(r"\s*(?:\[\d{1,3}\][\s,،]*)+")
+
+# A short answer that only says the information is not there. The small
+# model sometimes still adds [1], [2] to such a statement; a passage that
+# does not state something cannot support it.
+_ABSENCE = re.compile(
+    r"does(?:n't| not) (?:contain|provide|include|mention|specify|state)|no (?:information|mention|details?) "
+    r"(?:about|on|of|regarding)|is not (?:mentioned|stated|specified|available)|not (?:mentioned|stated) in"
+    r"|(?:could|can)(?:n't| not) find|i (?:did not|didn't) find"
+    r"|لا (?:تحتوي|يحتوي|تتضمن|يتضمن|يوجد|توجد|تذكر|يذكر)|لم (?:اجد|أجد|يتم ذكر|تذكر|يذكر)|غير مذكور|غير متوفر",
+    re.IGNORECASE,
+)
+MAX_ABSENCE_ANSWER_CHARS = 350
+# Course codes ("MOB-201") are names, not facts such as a fee or a date.
+_COURSE_CODE = re.compile(r"\b[A-Za-z]{2,4}-\d{2,4}\b")
+
+
+def is_absence_answer(answer: str) -> bool:
+    """True for a short, number-free answer that only says the information is missing."""
+    text = _CITATION_LIST.sub(" ", answer or "").strip()
+    return (len(text) <= MAX_ABSENCE_ANSWER_CHARS and not re.search(r"\d", _COURSE_CODE.sub(" ", text))
+            and bool(_ABSENCE.search(text)))
+
+
+def strip_citations(answer: str) -> str:
+    return re.sub(r"\s+([.,،])", r"\1", _CITATION_LIST.sub(" ", answer or "")).strip()
+
+
+def cited_sources(answer: str, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    The sources the answer actually relies on. With [n] citations: exactly
+    the cited, existing references. Without any: the sources whose course
+    the answer names. So an answer that says "not found" lists no sources,
+    and sources never look like support for something they do not support.
+    """
+    cited = {int(n) for n in _CITATION.findall(answer or "")}
+    if cited:
+        return [s for s in sources if s.get("reference") in cited]
+    folded = (answer or "").casefold()
+    return [
+        s for s in sources
+        if (s.get("course_name") and s["course_name"].casefold() in folded)
+        or (s.get("course_id") and s["course_id"].casefold() in folded)
+    ]
+
+
 def lang(language: Optional[str]) -> str:
     return "ar" if language == "ar" else "en"
 
@@ -158,6 +255,8 @@ def evidence_context(
         remaining -= len(label) + len(text)
         sources.append({
             "reference": chunk["reference"],
+            "course_id": chunk.get("course_id"),
+            "course_name": chunk.get("course_name"),
             "source": chunk.get("source"),
             "page": chunk.get("page"),
             "section": chunk.get("section"),
@@ -175,6 +274,7 @@ def build_messages(
     response_language: str,
     history: Optional[list[dict[str, str]]] = None,
     task: Optional[str] = None,
+    courses: Optional[list[dict[str, Any]]] = None,
 ) -> list:
     """System rules, recent turns, then the task, evidence and question."""
     system = (
@@ -183,8 +283,9 @@ def build_messages(
         f"{GROUNDING_RULES}\n\n{language_rule(response_language)}"
     )
     task_block = f"{task}\n\n" if task else ""
+    courses_line = f"{courses_block(courses)}\n\n" if courses is not None else ""
     user = (
-        f"{task_block}DOCUMENT CONTEXT:\n{context}\n\n"
+        f"{task_block}{courses_line}DOCUMENT CONTEXT:\n{context}\n\n"
         f"USER QUESTION (original wording):\n{question}\n\nANSWER:"
     )
 
