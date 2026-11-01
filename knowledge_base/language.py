@@ -66,6 +66,11 @@ _STRONG_ARABIZI = frozenset({
     "3shan", "3ashan", "3alashan", "3lshan",
     "ezay", "ezzay", "ezai",
     "me7tag", "mo7tag", "m7tag", "e7na", "ya3ni", "keda", "dawra", "dawrat",
+    # Short replies and request words (no English meaning; "mesh" is left
+    # out because it is an English word).
+    "aywa", "aiwa", "aywah", "tamam", "msh", "la2",
+    "tarshee7", "tarshe7", "tarshi7", "rasha7ly", "rasha7li", "rasha7ny", "rasha7ni",
+    "a3raf", "a3rf", "mota7a", "mota7ah",
 })
 
 # Short words that are common in Arabizi but can also appear in English
@@ -95,6 +100,11 @@ _ARABIZI_TO_ARABIC = {
     "me7tag": "محتاج", "mo7tag": "محتاج", "m7tag": "محتاج",
     "course": "كورس", "kors": "كورس", "kours": "كورس", "courses": "كورسات",
     "dawra": "دوره", "dawrat": "دورات",
+    "aywa": "ايوه", "aiwa": "ايوه", "aywah": "ايوه", "tamam": "تمام", "msh": "مش", "la2": "لا",
+    "tarshee7": "ترشيح", "tarshe7": "ترشيح", "tarshi7": "ترشيح",
+    "rasha7ly": "رشحلي", "rasha7li": "رشحلي", "rasha7ny": "رشحني", "rasha7ni": "رشحني",
+    "a3raf": "اعرف", "a3rf": "اعرف", "mota7a": "متاحه", "mota7ah": "متاحه",
+    "kam": "كام", "bkam": "بكام", "bekam": "بكام",
 }
 
 # The Arabic->English translation model is trained on Modern Standard
@@ -156,8 +166,23 @@ def looks_like_arabizi(text: str) -> bool:
     return weak_signals >= 2
 
 
+# The Arabizi article "el" before a known word becomes the Arabic prefix
+# "ال" ("el courses" -> "الكورسات"); before anything else it is left alone
+# ("El Paso"). Otherwise it survives as Latin text and leaks into the
+# translated search query as a stray "el".
+_ARABIZI_ARTICLE_RE = re.compile(r"\b[Ee]l[- ]+([A-Za-z0-9]+)")
+
+
+def _attach_article(match: re.Match) -> str:
+    arabic = _ARABIZI_TO_ARABIC.get(match.group(1).lower())
+    if arabic is None:
+        return match.group(0)
+    return "ال" + (arabic[2:] if arabic.startswith("ال") else arabic)
+
+
 def transliterate_arabizi(text: str) -> str:
     """Replace known Arabizi words with Arabic script, for matching only."""
+    text = _ARABIZI_ARTICLE_RE.sub(_attach_article, text)
     return _TOKEN_RE.sub(
         lambda match: _ARABIZI_TO_ARABIC.get(match.group(0).lower(), match.group(0)),
         text,

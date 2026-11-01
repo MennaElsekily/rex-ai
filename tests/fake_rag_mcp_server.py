@@ -42,5 +42,14 @@ def search_knowledge_base(
     }
 
 
+@mcp.tool()
+def list_courses() -> dict:
+    """List the indexed courses (fake list)."""
+    return {"status": "ok", "error": None, "courses": [
+        {"course_id": "DA-301", "course_name": "Python for Data Analysis"},
+        {"course_id": "SW-301", "course_name": "Backend APIs with Python and Django"},
+    ]}
+
+
 if __name__ == "__main__":
     mcp.run()

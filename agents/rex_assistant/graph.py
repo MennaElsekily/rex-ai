@@ -4,7 +4,9 @@ LangGraph workflow for Agent 1 (REX Assistant).
     detect_language -> handle_consent                       (consent reply)
                     -> understand -> ask_question            (discovery)
                                   -> general                 (greeting/help)
+                                  -> clarify_course          ("which course?")
                                   -> retrieve -> generate    (both answer modes)
+                                              -> clarify_course
 
 Two answer modes share one retrieval path and one answer writer:
 - Personalized recommendation: the six discovery fields (official brief,
@@ -20,6 +22,12 @@ REX writes the final answer itself in `generate` (generate_answer()
 below): it checks the evidence, builds its prompt from the retrieved
 chunks (prompts.py), calls its own LangChain chat model, and for
 recommendations applies its course checks (recommendation.py).
+
+Which course a direct question is about is decided without the LLM
+(course_context.py), against the courses in the indexed metadata (MCP
+tool list_courses): one course named -> its evidence only; several
+matching equally -> "Which course do you mean?" (clarify_course); "How
+long is it?" -> the course under discussion (state course_focus).
 """
 
 from __future__ import annotations
@@ -27,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import urllib.request
 from functools import lru_cache
 from typing import Any, Optional
@@ -43,11 +52,13 @@ from agents.course_intent import (
     RECOMMENDATION,
     classify_course_intent,
     is_catalogue_listing,
+    is_greeting,
     is_small_talk,
     looks_like_question,
     names_a_course,
 )
-from agents.rex_assistant import discovery
+from agents.rex_assistant import course_context, discovery
+from agents.rex_assistant.course_context import AMBIGUOUS, NAMED, NONE
 from agents.rex_assistant.lead_store import LeadStore
 from agents.rex_assistant.mcp_client import RagMcpClient
 from agents.rex_assistant.prompts import (
@@ -56,7 +67,11 @@ from agents.rex_assistant.prompts import (
     MODE_QUESTION,
     MODE_RECOMMENDATION,
     build_messages,
+    cited_sources,
+    course_question_task,
     evidence_context,
+    is_absence_answer,
+    strip_citations,
     fallback_key,
     message,
 )
@@ -64,6 +79,7 @@ from agents.rex_assistant.recommendation import check_recommendation, recommenda
 from agents.rex_assistant.state import RexAssistantState
 from agents.text_utils import normalize_for_matching
 from knowledge_base.language import (
+    contains_arabic,
     detect_conversation_language,
     detect_explicit_language_request,
     looks_like_arabizi,
@@ -242,6 +258,202 @@ def _detect_consent(text: str) -> Optional[bool]:
 
 
 # ---------------------------------------------------------------------
+# Which course is a direct question about?
+# ---------------------------------------------------------------------
+
+COURSE_LIST_TTL_SECONDS = 600
+COURSE_LIST_RETRY_SECONDS = 60
+
+
+class CourseCatalogue:
+    """
+    The courses named in the indexed metadata (MCP tool list_courses),
+    cached for a few minutes. Shared by all conversations: it holds no
+    learner data. Empty when the tool is unavailable -- REX then uses
+    the courses named in the retrieved evidence instead.
+    """
+
+    def __init__(self, mcp_client: Any, clock=time.monotonic) -> None:
+        self._client = mcp_client
+        self._clock = clock
+        self._courses: list[dict[str, Any]] = []
+        self._next_refresh = 0.0
+
+    def courses(self) -> list[dict[str, Any]]:
+        now = self._clock()
+        if now < self._next_refresh:
+            return self._courses
+        fetched: list[dict[str, Any]] = []
+        lister = getattr(self._client, "list_courses", None)
+        if callable(lister):
+            try:
+                result = lister()
+                if isinstance(result, dict) and result.get("status") == "ok":
+                    fetched = course_context.clean_courses(result.get("courses"))
+            except Exception:
+                logger.warning("The course list is unavailable", exc_info=True)
+        if fetched:
+            self._courses, self._next_refresh = fetched, now + COURSE_LIST_TTL_SECONDS
+        else:
+            # Keep the last good list; ask again a little later.
+            self._next_refresh = now + COURSE_LIST_RETRY_SECONDS
+        return self._courses
+
+
+def _saved_choice(choice: Any) -> Optional[dict[str, Any]]:
+    """The pending "Which course do you mean?" from state, or None if unusable."""
+    if not isinstance(choice, dict):
+        return None
+    question = choice.get("question")
+    if not isinstance(question, str) or not question.strip():
+        return None
+    return {"question": question, "candidates": course_context.clean_courses(choice.get("candidates"))}
+
+
+def _clarify(question: str, options: list[dict[str, Any]]) -> dict[str, Any]:
+    """Ask which course is meant; the question is answered once one is chosen."""
+    return {
+        "next_step": "clarify_course",
+        "answer_mode": None,
+        "course_options": options,
+        "course_choice": {"question": question, "candidates": options},
+    }
+
+
+def _course_updates(text: str, state: RexAssistantState, catalogue: CourseCatalogue) -> dict[str, Any]:
+    """
+    For a direct question: the course(s) it is about (course_scope), a
+    clarification, or "decide after retrieval" (course_post_match).
+    """
+    if is_catalogue_listing(text):
+        # The whole catalogue is the topic now; no single course is.
+        return {"course_focus": []}
+
+    courses = catalogue.courses()
+    reference = course_context.resolve_reference(text, courses)
+    if reference.kind == NAMED:
+        return {"course_scope": reference.courses, "course_focus": reference.courses, "course_question": text}
+    if reference.kind == AMBIGUOUS:
+        return _clarify(text, reference.courses)
+
+    focus = course_context.known_courses(course_context.clean_courses(state.get("course_focus")), courses)
+    if focus and course_context.refers_back(text):
+        if len(focus) == 1:
+            return {"course_scope": focus, "course_focus": focus, "course_question": text}
+        return _clarify(text, focus)   # e.g. after a comparison or a recommendation
+    if not focus and not state.get("active_topic") and course_context.needs_a_course(text):
+        return _clarify(text, [])      # "How much does it cost?" -- which course?
+
+    # Not decided by the words alone: an Arabic description ("دورة تحليل
+    # البيانات") is matched on the English search query after retrieval,
+    # and without a course list the courses in the evidence are used.
+    return {"course_focus": focus, "course_post_match": True}
+
+
+def _choice_updates(text: str, state: RexAssistantState, catalogue: CourseCatalogue) -> Optional[dict[str, Any]]:
+    """The reply to "Which course do you mean?", or None when it is not one."""
+    choice = _saved_choice(state.get("course_choice"))
+    if choice is None or classify_course_intent(text) == RECOMMENDATION:
+        return None
+
+    courses = catalogue.courses()
+    candidates = course_context.known_courses(choice["candidates"], courses)
+    picked = course_context.parse_choice(text, candidates, courses)
+    updates: dict[str, Any] = {"intent": COURSE_QUESTION, "clarify": False, "consent_pending": False}
+
+    if picked.kind == NAMED:
+        # "2" or "Python for Data Analysis" answers the question asked
+        # before; "the second one, how much is it?" asks its own.
+        own_question = classify_course_intent(text, course_context=True) == COURSE_QUESTION
+        return {
+            **updates,
+            "next_step": "retrieve",
+            "answer_mode": MODE_QUESTION,
+            "course_scope": picked.courses,
+            "course_focus": picked.courses,
+            "course_question": text if own_question else choice["question"],
+            "course_choice": None,
+        }
+    if picked.kind == AMBIGUOUS:
+        return {**updates, **_clarify(choice["question"], picked.courses)}
+    return None
+
+
+MAX_BARE_COURSE_WORDS = 6
+
+
+def _bare_course_reply(text: str, state: RexAssistantState, catalogue: CourseCatalogue) -> bool:
+    """
+    A short message that is only a course name ("python foundations",
+    "Python for Data Analysis"): answered as a course question when it
+    names a known course, or when a course conversation is already open.
+    Greetings, thanks and acknowledgements ("ok") are not.
+    """
+    words = text.split()
+    if not words or len(words) > MAX_BARE_COURSE_WORDS:
+        return False
+    if is_greeting(text) or is_small_talk(text) or discovery.is_acknowledgement(text):
+        return False
+    if not course_context.content_words(text):
+        return False
+    if state.get("active_topic") or state.get("course_focus"):
+        return True
+    return course_context.resolve_reference(text, catalogue.courses()).kind != NONE
+
+
+def _search(mcp_client: RagMcpClient, **arguments: Any) -> dict[str, Any]:
+    """The search_knowledge_base MCP tool; a failure becomes an error result."""
+    try:
+        # The only route to the knowledge base: the MCP tool. It returns
+        # evidence and source metadata, never an answer.
+        evidence = mcp_client.search_knowledge_base(**arguments)
+    except Exception as exc:
+        # Details (which may hold paths) go to the log; the state the
+        # caller keeps gets the error type only.
+        logger.warning("Knowledge-base tool call failed", exc_info=True)
+        return {"status": "error", "chunks": [], "courses": [],
+                "error": f"The knowledge-base search is unavailable ({type(exc).__name__})."}
+
+    if not isinstance(evidence, dict) or "status" not in evidence:
+        return {"status": "error", "chunks": [], "courses": [], "error": "Unexpected tool response."}
+    return evidence
+
+
+def _evidence_for_courses(
+    mcp_client: RagMcpClient,
+    question: str,
+    courses: list[dict[str, Any]],
+    catalogue: list[dict[str, Any]],
+    evidence: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """
+    Evidence about the selected course(s) only, plus general academy
+    passages. A question that does not name the course itself ("How long
+    is it?", or the original "the Python course" question after a choice)
+    is searched together with the course's name. If none of the course's
+    own passages ranks among the results, its passages are searched
+    directly with a metadata filter on its course id.
+    """
+    named = course_context.resolve_reference(question, catalogue or courses)
+    names_them = named.kind == NAMED and course_context.same_courses(named.courses, courses)
+    labels = "; ".join(course_context.course_label(c) for c in courses)
+    retrieval_query = None if names_them else f"{question} (course: {labels})"
+
+    if evidence is None:
+        evidence = _search(mcp_client, question=question, retrieval_query=retrieval_query)
+    scoped, found = course_context.scope_evidence(evidence, courses)
+
+    metadata_filter = course_context.course_filter(courses)
+    if found or metadata_filter is None or evidence.get("status") not in ("ok", "no_results"):
+        return scoped
+
+    filtered = _search(mcp_client, question=question, retrieval_query=retrieval_query,
+                       metadata_filter=metadata_filter)
+    own, found_own = course_context.scope_evidence(filtered, courses)
+    return course_context.merge_evidence(own, scoped) if found_own else scoped
+
+
+# ---------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------
 
@@ -328,9 +540,18 @@ def _extract_profile_facts(llm, text: str) -> dict[str, str]:
         return {}
 
 
-def make_understand_node(model: str):
+def make_understand_node(model: str, catalogue: Optional[CourseCatalogue] = None):
+    catalogue = catalogue or CourseCatalogue(None)
+
     def understand_node(state: RexAssistantState) -> dict[str, Any]:
         text = state["user_input"]
+
+        # 0. The reply to "Which course do you mean?" (asked last turn)
+        #    comes first: "2" is a choice here, not a discovery answer.
+        chosen = _choice_updates(text, state, catalogue)
+        if chosen is not None:
+            return chosen
+
         profile = dict(state.get("profile") or {})
         declined = list(state.get("declined_fields") or [])
         attempts = dict(state.get("field_attempts") or {})
@@ -342,7 +563,15 @@ def make_understand_node(model: str):
         # intent: the same, but a follow-up ("is it online?") also counts
         # when a course is already being discussed.
         explicit_question = classify_course_intent(text) == COURSE_QUESTION
-        intent = classify_course_intent(text, course_context=bool(active_topic))
+        intent = classify_course_intent(
+            text, course_context=bool(active_topic or state.get("course_focus"))
+        )
+        # "Python for Data Analysis" typed in the middle of the
+        # questionnaire is a course question, not the pending answer.
+        if in_discovery and pending and intent == GENERAL and course_context.clearly_names(
+            text, catalogue.courses()
+        ):
+            explicit_question, intent = True, COURSE_QUESTION
         recommend_now = discovery.wants_recommendation_now(text)
         answered = False
         unclear = False
@@ -424,10 +653,14 @@ def make_understand_node(model: str):
             # keywords: relevant evidence -> an answer; none -> the
             # honest "couldn't find" message.
             next_step, answer_mode = "retrieve", MODE_QUESTION
+        elif _bare_course_reply(text, state, catalogue):
+            # "python foundations" on its own -- a course name, or the
+            # reply to "which one do you mean?" in a course conversation.
+            next_step, answer_mode = "retrieve", MODE_QUESTION
         else:
             next_step, answer_mode = "general", None
 
-        return {
+        updates = {
             "profile": profile,
             "declined_fields": declined,
             "field_attempts": attempts,
@@ -441,7 +674,15 @@ def make_understand_node(model: str):
             # Reached with a consent question open only when the learner
             # moved on (route_after_language): leave consent unanswered.
             "consent_pending": False,
+            # A "Which course?" question is answered on the very next turn
+            # or not at all: an unrelated reply drops it.
+            "course_choice": None,
         }
+
+        if next_step == "retrieve" and answer_mode == MODE_QUESTION:
+            updates.update(_course_updates(text, state, catalogue))
+
+        return updates
 
     return understand_node
 
@@ -451,7 +692,22 @@ def route_after_understand(state: RexAssistantState) -> str:
         "ask_question": "ask_question",
         "retrieve": "retrieve",
         "general": "general",
+        "clarify_course": "clarify_course",
     }[state["next_step"]]
+
+
+def route_after_retrieve(state: RexAssistantState) -> str:
+    return "clarify_course" if state.get("next_step") == "clarify_course" else "generate"
+
+
+def make_clarify_course_node():
+    def clarify_course_node(state: RexAssistantState) -> dict[str, Any]:
+        """A fixed bilingual "Which course do you mean?"; the LLM is not called."""
+        language = state.get("response_language") or "en"
+        options = course_context.clean_courses(state.get("course_options"))
+        return {"response": course_context.clarification_message(options, language), "rag_result": None}
+
+    return clarify_course_node
 
 
 def make_ask_question_node():
@@ -496,38 +752,72 @@ def _recommendation_query(profile: dict[str, Any]) -> Optional[str]:
     return ("Courses suitable for a learner with " + "; ".join(parts)) if parts else None
 
 
-def make_retrieve_node(mcp_client: RagMcpClient):
+def make_retrieve_node(mcp_client: RagMcpClient, catalogue: Optional[CourseCatalogue] = None):
+    catalogue = catalogue or CourseCatalogue(None)
+
     def retrieve_node(state: RexAssistantState) -> dict[str, Any]:
         text = state["user_input"]
 
         if state["answer_mode"] == MODE_RECOMMENDATION:
             retrieval_query = _recommendation_query(state.get("profile") or {})
-        elif (
-            state.get("active_topic")
+            return {"evidence": _search(mcp_client, question=text, retrieval_query=retrieval_query)}
+
+        courses = catalogue.courses()
+
+        # The course is already known: its evidence only.
+        scope = course_context.clean_courses(state.get("course_scope"))
+        if scope:
+            question = state.get("course_question") or text
+            return {"evidence": _evidence_for_courses(mcp_client, question, scope, courses)}
+
+        if (
+            not courses
+            and state.get("active_topic")
             and state["active_topic"] != text
             and not names_a_course(text)
         ):
-            # Follow-up without a course name: search it in the context
-            # of the course discussed before.
+            # No course list to identify courses with: search a follow-up
+            # without a course name in the context of the earlier question.
             retrieval_query = f"{text} (about: {state['active_topic']})"
         elif is_catalogue_listing(text):
             retrieval_query = f"{text}. {CATALOGUE_LISTING_HINT}"
         else:
             retrieval_query = None
 
-        try:
-            # The only route to the knowledge base: the MCP tool. It
-            # returns evidence and source metadata, never an answer.
-            evidence = mcp_client.search_knowledge_base(
-                question=text, retrieval_query=retrieval_query
-            )
-        except Exception as exc:
-            evidence = {"status": "error", "chunks": [], "error": f"{type(exc).__name__}: {exc}"}
+        evidence = _search(mcp_client, question=text, retrieval_query=retrieval_query)
+        if not state.get("course_post_match"):
+            return {"evidence": evidence}
 
-        if not isinstance(evidence, dict) or "status" not in evidence:
-            evidence = {"status": "error", "chunks": [], "error": "Unexpected tool response."}
+        # Decide the course now: from the course list or, without one, the
+        # courses in the evidence; an Arabic question by its English query.
+        pool = courses or course_context.clean_courses(evidence.get("courses"))
+        reference = course_context.resolve_reference(text, pool)
+        translated = evidence.get("retrieval_query")
+        if (
+            reference.kind == NONE
+            and retrieval_query is None
+            and contains_arabic(text)
+            and isinstance(translated, str)
+            and translated != text
+        ):
+            reference = course_context.resolve_reference(translated, pool)
 
-        return {"evidence": evidence}
+        if reference.kind == AMBIGUOUS:
+            return {"evidence": evidence, **_clarify(text, reference.courses)}
+        if reference.kind == NAMED:
+            return {
+                "evidence": _evidence_for_courses(mcp_client, text, reference.courses, courses,
+                                                  evidence=evidence if retrieval_query is None else None),
+                "course_scope": reference.courses,
+                "course_focus": reference.courses,
+            }
+
+        updates: dict[str, Any] = {"evidence": evidence}
+        if names_a_course(text) and course_context.content_words(text):
+            # A course REX does not know ("the Kubernetes course"): no
+            # earlier course applies to the next follow-up either.
+            updates["course_focus"] = []
+        return updates
 
     return retrieve_node
 
@@ -550,9 +840,12 @@ def generate_answer(
     profile: Optional[dict[str, Any]] = None,
     declined: Optional[list[str]] = None,
     history: Optional[list[dict[str, str]]] = None,
+    selected_courses: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """
-    REX writes its answer from the retrieved evidence.
+    REX writes its answer from the retrieved evidence. selected_courses:
+    the course(s) a direct question is about, when REX identified them
+    (the evidence is then already limited to them).
 
     1. No usable evidence (empty index, no results, retrieval error):
        a fixed bilingual message, and the LLM is not called.
@@ -577,9 +870,12 @@ def generate_answer(
                 "status": "no_usable_evidence"}
 
     recommending = mode == MODE_RECOMMENDATION
+    # One generator for both modes; only the task differs.
     messages = build_messages(
         evidence.get("question", ""), context, language, history,
-        task=recommendation_task(profile, declined) if recommending else None,
+        task=(recommendation_task(profile, declined) if recommending
+              else course_question_task(selected_courses)),
+        courses=evidence.get("courses") or [],
     )
 
     answer = _invoke_text(llm, messages)
@@ -597,8 +893,13 @@ def generate_answer(
 
     if recommending:
         answer = check_recommendation(answer, context, profile, language)
+    elif is_absence_answer(answer):
+        # "The context does not contain X. [1], [2]": nothing supports an
+        # absence, so the labels go and no sources are listed.
+        return {"answer": strip_citations(answer), "sources": [], "status": "answered"}
 
-    return {"answer": answer, "sources": sources, "status": "answered"}
+    # Only the sources the answer relies on (cited, or naming their course).
+    return {"answer": answer, "sources": cited_sources(answer, sources), "status": "answered"}
 
 
 def make_generate_node(model: str):
@@ -613,6 +914,8 @@ def make_generate_node(model: str):
             _get_llm(model), evidence, language,
             mode=mode, profile=profile, declined=declined,
             history=state.get("history"),
+            selected_courses=(course_context.clean_courses(state.get("course_scope"))
+                              if mode == MODE_QUESTION else None),
         )
 
         response = written["answer"]
@@ -634,6 +937,9 @@ def make_generate_node(model: str):
 
             updates["mode"] = None
             updates["pending_field"] = None
+            # A follow-up ("How long is it?") is about the recommended
+            # course; with several recommended, REX asks which one.
+            updates["course_focus"] = course_context.courses_of_sources(written["sources"])
 
             if (
                 not state.get("lead_captured")
@@ -716,14 +1022,16 @@ def build_graph(
     agents/rag_mcp_server.py on first use.
     """
     mcp_client = mcp_client or RagMcpClient()
+    catalogue = CourseCatalogue(mcp_client)
 
     graph = StateGraph(RexAssistantState)
 
     graph.add_node("detect_language", make_detect_language_node())
-    graph.add_node("understand", make_understand_node(model))
+    graph.add_node("understand", make_understand_node(model, catalogue))
     graph.add_node("ask_question", make_ask_question_node())
     graph.add_node("general", make_general_node())
-    graph.add_node("retrieve", make_retrieve_node(mcp_client))
+    graph.add_node("clarify_course", make_clarify_course_node())
+    graph.add_node("retrieve", make_retrieve_node(mcp_client, catalogue))
     graph.add_node("generate", make_generate_node(model))
     graph.add_node("handle_consent", make_handle_consent_node(lead_store))
 
@@ -736,11 +1044,17 @@ def build_graph(
     graph.add_conditional_edges(
         "understand",
         route_after_understand,
-        {"ask_question": "ask_question", "retrieve": "retrieve", "general": "general"},
+        {"ask_question": "ask_question", "retrieve": "retrieve", "general": "general",
+         "clarify_course": "clarify_course"},
     )
-    graph.add_edge("retrieve", "generate")
+    graph.add_conditional_edges(
+        "retrieve",
+        route_after_retrieve,
+        {"generate": "generate", "clarify_course": "clarify_course"},
+    )
     graph.add_edge("ask_question", END)
     graph.add_edge("general", END)
+    graph.add_edge("clarify_course", END)
     graph.add_edge("generate", END)
     graph.add_edge("handle_consent", END)
 

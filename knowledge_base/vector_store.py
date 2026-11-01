@@ -38,6 +38,8 @@ class VectorStore:
             exist_ok=True,
         )
 
+        self.collection_name = collection_name
+
         self.client = chromadb.PersistentClient(
             path=self.persist_directory
         )
@@ -46,6 +48,37 @@ class VectorStore:
             name=collection_name,
             metadata={"hnsw:space": "cosine"},
         )
+        self._index_stamp = self._read_index_stamp()
+
+    # Files any writer of this index changes (the vector data is logged in
+    # the SQLite database before it is compacted into the vector index).
+    _INDEX_FILES = ("chroma.sqlite3", "chroma.sqlite3-wal")
+
+    def _read_index_stamp(self) -> tuple[int, ...]:
+        stamps = []
+        for name in self._INDEX_FILES:
+            try:
+                stamps.append(Path(self.persist_directory, name).stat().st_mtime_ns)
+            except OSError:
+                stamps.append(0)
+        return tuple(stamps)
+
+    def reload_if_changed(self) -> bool:
+        """
+        Reopen the index when another process (an ingestion run) wrote to
+        it since it was opened. Chroma keeps one in-memory vector index per
+        path and process: metadata reads see other processes' writes, but
+        searches do not, so newly ingested chunks would stay unsearchable
+        until a restart. Reopening never creates a collection.
+        """
+        if self._read_index_stamp() == self._index_stamp:
+            return False
+
+        self.client.clear_system_cache()
+        self.client = chromadb.PersistentClient(path=self.persist_directory)
+        self.collection = self.client.get_collection(name=self.collection_name)
+        self._index_stamp = self._read_index_stamp()
+        return True
 
     def add_chunks(
         self,
@@ -122,6 +155,8 @@ class VectorStore:
             embeddings=embeddings,
             metadatas=metadatas,
         )
+        # Our own write: already visible here, no reopen needed.
+        self._index_stamp = self._read_index_stamp()
 
         return len(ids)
 
@@ -140,6 +175,8 @@ class VectorStore:
 
         if not query_embedding:
             raise ValueError("query_embedding cannot be empty")
+
+        self.reload_if_changed()
 
         if self.collection.count() == 0:
             return []
@@ -180,5 +217,6 @@ class VectorStore:
 
         if ids:
             self.collection.delete(ids=ids)
+            self._index_stamp = self._read_index_stamp()
 
         return len(ids)
