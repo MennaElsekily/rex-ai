@@ -24,6 +24,7 @@ from agents.rex_assistant.mcp_client import RagMcpClient
 _PER_TURN_KEYS = (
     "rag_result", "evidence", "response", "intent", "next_step",
     "answer_mode", "clarify", "detected_language", "response_language",
+    "course_scope", "course_question", "course_options", "course_post_match",
 )
 
 
@@ -42,6 +43,8 @@ def _new_state() -> dict[str, Any]:
         "declined_fields": [],
         "discovery_intro_shown": False,
         "active_topic": None,
+        "course_focus": [],
+        "course_choice": None,
     }
 
 
@@ -118,6 +121,8 @@ class RexAssistantAgent:
                     "profile": dict,
                     "consent_pending": bool,
                     "lead_captured": bool,
+                    "selected_course": {course_id, course_name} | None,
+                    "course_options": list[dict],  # "which course?" options
                     "detected_language": str | None,
                     "response_language": str | None,
                 } | None,
@@ -166,8 +171,12 @@ class RexAssistantAgent:
         result_state["history"] = history
 
         rag_result = result_state.get("rag_result") or {}
-        # Retrieved passages are only needed while writing this answer.
-        result_state.pop("evidence", None)
+        course_options = result_state.get("course_options") or []
+        focus = result_state.get("course_focus") or []
+        # Retrieved passages and this turn's course routing are only
+        # needed while writing this answer.
+        for key in ("evidence", "course_scope", "course_question", "course_options", "course_post_match"):
+            result_state.pop(key, None)
 
         return {
             "request_id": request_id,
@@ -180,6 +189,10 @@ class RexAssistantAgent:
                 "profile": result_state.get("profile", {}),
                 "mode": result_state.get("mode"),
                 "pending_field": result_state.get("pending_field"),
+                # The course under discussion, and the options of an open
+                # "Which course do you mean?" (empty otherwise).
+                "selected_course": focus[0] if len(focus) == 1 else None,
+                "course_options": course_options,
                 "consent_pending": result_state.get("consent_pending", False),
                 "lead_captured": result_state.get("lead_captured", False),
                 "detected_language": result_state.get("detected_language"),

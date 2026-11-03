@@ -53,6 +53,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from agents.sqlite_utils import connect
+
 DEFAULT_DB_PATH = (
     Path(__file__).resolve().parent / "rfp_opportunities.sqlite3"
 )
@@ -172,9 +174,7 @@ class OpportunityStore:
         self.db_path = Path(db_path or DEFAULT_DB_PATH)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._connection = sqlite3.connect(
-            str(self.db_path), check_same_thread=False
-        )
+        self._connection = connect(self.db_path)
         self._lock = threading.Lock()
 
         with self._lock:

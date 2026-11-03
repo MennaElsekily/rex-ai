@@ -127,3 +127,51 @@ def test_catalogue_listing_questions(text, expected):
     from agents.course_intent import is_catalogue_listing
 
     assert is_catalogue_listing(text) is expected
+
+
+# --------------------------------------------------------------------
+# Phase 1 (two-mode REX): Egyptian and Arabizi phrasings
+# --------------------------------------------------------------------
+
+@pytest.mark.parametrize("text", ["عايز ترشيح كورس", "عاوز ترشيح دورة", "محتاج ترشيحات كورسات",
+                                  "3ayez tarshee7 course", "rasha7ly course"])
+def test_egyptian_and_arabizi_recommendation_requests(text):
+    assert classify_course_intent(text) == RECOMMENDATION
+
+
+@pytest.mark.parametrize("text", ["3ayez a3raf el courses el mota7a", "el course da bkam?"])
+def test_arabizi_course_questions(text):
+    assert classify_course_intent(text) == COURSE_QUESTION
+
+
+@pytest.mark.parametrize("text", ["aywa", "tamam", "أيوه", "تمام"])
+def test_short_acknowledgements_are_not_course_intents(text):
+    assert classify_course_intent(text) == GENERAL
+
+
+# Live finding: "Iam a computer engineer student and i need course python"
+# got REX's greeting instead of course help.
+@pytest.mark.parametrize("text", [
+    "Iam a computer engineer student and i need course python",
+    "i need a python course",
+    "I want a Python course",
+    "I'm a student and I need a course in data analysis",
+    "انا طالب هندسة وعايز كورس بايثون",
+    "محتاج دورة في تحليل البيانات",
+])
+def test_needing_a_course_is_a_recommendation_request(text):
+    assert classify_course_intent(text) == RECOMMENDATION
+
+
+@pytest.mark.parametrize("text", [
+    "I need the Python course schedule",          # a detail of one course
+    "I want to know which courses you have",      # the catalogue
+    "I want to know if the course is online",
+])
+def test_needing_course_details_stays_a_course_question(text):
+    assert classify_course_intent(text) == COURSE_QUESTION
+
+
+@pytest.mark.parametrize("text", ["I need help", "python foundations", "Hello"])
+def test_need_without_a_course_word_is_not_a_recommendation(text):
+    assert classify_course_intent(text) == GENERAL

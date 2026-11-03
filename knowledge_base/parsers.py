@@ -28,10 +28,11 @@ from pptx import Presentation
 from pypdf import PdfReader
 
 from knowledge_base.file_loader import check_signature, get_file_type
+from knowledge_base.metadata_extractor import IDENTITY_FIELD
 
 # Generic field-name conventions (not dataset fields): which column
 # identifies a record and which one names it.
-_ID_FIELD = re.compile(r"(?:^|[\s_\-.])(?:id|code|key|ref|sku|number|no)$", re.IGNORECASE)
+_ID_FIELD = IDENTITY_FIELD   # shared with the chunker (knowledge_base/metadata_extractor.py)
 _TITLE_FIELD = re.compile(
     r"(?:^|[\s_\-.])(?:name|title|question|subject|heading|label)$", re.IGNORECASE
 )

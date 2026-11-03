@@ -1,40 +1,46 @@
-streamlit
-pytest
+# Runtime dependencies. Each range starts at the oldest version the project was tested with (Python 3.13, two environments) and stops before the
+# next major version; nothing is pinned to a single release except the two Arabic PDF libraries and sacremoses.
+# Test tools are in requirements-dev.txt.
+
+# Web interface
+streamlit>=1.66,<2
 
 # Agent orchestration and LLM integration (LangChain is used through its
 # split packages: langchain-core and langchain-ollama, which also installs
 # the ollama client)
-langchain-core
-langgraph
-langchain-ollama
-pydantic
+langchain-core>=1.6,<2
+langgraph>=1.2,<2
+langchain-ollama>=1.1,<2
+pydantic>=2.13,<3
+typing_extensions>=4.16,<5   # TypedDict in the agents' graph states (imported directly)
 
 # Document parsing (PDF, DOCX, PPTX, XLSX, HTML)
-pypdf
-python-docx
-python-pptx
-openpyxl
-beautifulsoup4
+pypdf>=6.14,<7
+python-docx>=1.2,<2
+python-pptx>=1.0,<2
+openpyxl>=3.1,<4
+beautifulsoup4>=4.14,<5
 
 # PDF generation: demo catalogue (knowledge_base/datasets/) and curricula
 # (agents/curriculum_research/pdf.py). Arabic PDFs need letter shaping
 # (arabic-reshaper, MIT) and right-to-left ordering (python-bidi, LGPL).
-reportlab
+reportlab>=5.1,<6
 arabic-reshaper==3.0.1
 python-bidi==0.6.12
 
-# Vector database and embeddings
-chromadb
-sentence-transformers
+# Vector database and embeddings (sentence-transformers runs on PyTorch)
+chromadb>=1.5,<2
+sentence-transformers>=5.6,<7
+torch>=2.11,<3
 
 # Configuration (.env) and HTTP clients (World Bank, Tavily)
-python-dotenv
-httpx
+python-dotenv>=1.2,<2
+httpx>=0.28,<1
 
 # MCP integration (the official SDK)
-mcp
+mcp>=2.3,<3
 
 # Arabic -> English query translation (MarianMT needs sentencepiece and sacremoses)
-transformers
-sentencepiece
+transformers>=5.16,<6
+sentencepiece>=0.2,<1
 sacremoses==0.2.0

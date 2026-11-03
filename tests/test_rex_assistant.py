@@ -147,11 +147,13 @@ def test_unrelated_question_is_checked_against_the_evidence_not_answered(agent, 
 @pytest.mark.parametrize("message", [
     "What courses are available?",
     "What does the Python course cover?",
-    "What are the prerequisites for this course?",
+    "What are the prerequisites?",
     "ما هي الدورات المتاحة؟",
-    "مدة الكورس كام؟",
+    "ما هي سياسة الاسترداد؟",
 ])
 def test_course_questions_are_answered_without_discovery(message, agent, mcp, llm):
+    # (Phase 4: "this course" / "مدة الكورس" with no course under
+    # discussion now get "Which course?" -- see test_rex_course_context.py.)
     result = _converse(agent, message)["result"]
 
     assert result["mode"] is None
@@ -398,15 +400,21 @@ def test_follow_up_question_uses_the_course_discussed_before(agent, mcp):
     assert response["result"]["answer_status"] == "answered"
 
 
-def test_course_follow_up_without_any_course_is_left_to_the_evidence(agent, mcp, llm):
-    # No keyword guess: retrieval runs, and grounding rule 6 makes the
-    # model list the matching courses and ask which one when there are
-    # several.
-    response = _converse(agent, "How much does it cost?")
+@pytest.mark.parametrize("message, expected", [
+    ("How much does it cost?", "Which course are you asking about?"),
+    ("What are the prerequisites for this course?", "Which course are you asking about?"),
+    ("مدة الكورس كام؟", "عن أي دورة تسأل؟"),
+])
+def test_course_follow_up_without_any_course_asks_which_course(message, expected, agent, mcp, llm):
+    # Phase 4: the model no longer guesses a course; REX asks, with a
+    # fixed bilingual message, and searches nothing yet.
+    response = _converse(agent, message)
 
-    assert mcp.search_knowledge_base.call_args.kwargs["question"] == "How much does it cost?"
-    assert "ask which one they mean" in llm.answer_calls[-1][0].content
-    assert response["result"]["answer_status"] == "answered"
+    assert response["result"]["answer"].startswith(expected)
+    assert response["result"]["sources"] == []
+    mcp.search_knowledge_base.assert_not_called()
+    assert llm.answer_calls == []
+    assert response["state"]["course_choice"]["question"] == message
 
 
 @pytest.mark.parametrize("question", [
@@ -778,3 +786,63 @@ def test_the_chat_model_reads_the_whole_prompt():
     llm = rex_graph._get_llm.__wrapped__("qwen2.5:7b")
 
     assert llm.num_ctx == rex_graph.LLM_CONTEXT_TOKENS == 8192
+
+
+# --------------------------------------------------------------------
+# Phase 1 (two-mode REX): short replies, Egyptian and Arabizi requests
+# --------------------------------------------------------------------
+
+@pytest.mark.parametrize("reply", ["Yes.", "OK!", "Okay.", "أيوه", "تمام.", "aywa"])
+def test_an_acknowledgement_is_not_stored_as_an_answer(reply, agent):
+    response = _converse(agent, "Recommend a course for me", reply)
+
+    assert "background" not in response["state"]["profile"]
+    assert response["result"]["pending_field"] == "background"  # asked again (clarification)
+
+
+def test_two_unclear_replies_then_the_field_is_skipped(agent):
+    response = _converse(agent, "عايز ترشيح كورس", "أيوه", "تمام")
+
+    assert "background" in response["state"]["declined_fields"]
+    assert "background" not in response["state"]["profile"]
+    assert response["result"]["pending_field"] == "career_goal"
+    assert response["result"]["response_language"] == "ar"
+
+
+@pytest.mark.parametrize("message", ["عايز ترشيح كورس", "3ayez tarshee7 course"])
+def test_egyptian_and_arabizi_recommendation_requests_start_discovery(message, agent, mcp):
+    result = _converse(agent, message)["result"]
+
+    assert result["mode"] == "discovery" and result["pending_field"] == "background"
+    assert result["response_language"] == "ar"
+    mcp.search_knowledge_base.assert_not_called()
+
+
+def test_arabizi_catalogue_question_searches_without_discovery(agent, mcp):
+    result = _converse(agent, "3ayez a3raf el courses el mota7a")["result"]
+
+    assert result["mode"] is None and result["pending_field"] is None
+    mcp.search_knowledge_base.assert_called_once()
+    assert result["response_language"] == "ar"
+
+
+# --------------------------------------------------------------------
+# Two-mode REX, Phase 2: MCP failures stay safe and contained
+# --------------------------------------------------------------------
+
+def test_an_mcp_failure_keeps_the_conversation_and_hides_internals(agent, mcp):
+    mcp.search_knowledge_base.side_effect = ConnectionError(r"C:\Users\someone\server.py crashed")
+
+    response = _converse(agent, "What does the Python course cover?")
+
+    assert response["status"] == "success"
+    assert response["result"]["answer_status"] == "unavailable"
+    assert response["result"]["sources"] == []
+    error = response["state"]["rag_result"]["error"]
+    assert "ConnectionError" in error and "Users" not in error and "crashed" not in error
+
+    # The conversation goes on: a later message still works.
+    mcp.search_knowledge_base.side_effect = None
+    mcp.search_knowledge_base.return_value = _evidence(chunks=[CHUNK])
+    later = _converse(agent, "What does the Python course cover?", state=response["state"])
+    assert later["result"]["answer_status"] == "answered"

@@ -152,9 +152,13 @@ _TIME_WORDS = (
     "اي وقت", "مش محدد", "حسب",
 )
 _BARE_REPLIES = frozenset({
-    "yes", "no", "ok", "okay", "sure", "yeah", "nope", "thanks", "thank you",
-    "نعم", "لا", "تمام", "ايوه", "ماشي", "شكرا", "اوك",
+    "yes", "no", "ok", "okay", "sure", "yeah", "yep", "nope", "thanks", "thank you",
+    "alright", "fine", "got it",
+    "نعم", "لا", "تمام", "ايوه", "ماشي", "شكرا", "اوك", "اوكي", "حاضر", "طيب",
+    "aywa", "aiwa", "tamam", "la2",
 })
+# Trailing punctuation does not make an acknowledgement an answer ("Yes.").
+_BARE_STRIP = " \t.,!،؛;:…"
 _PLACEHOLDER_PREFIXES = (
     "no information", "no info", "not mentioned", "not provided",
     "not specified", "not stated", "unknown", "n/a", "none", "null",
@@ -182,6 +186,11 @@ def _has_unit(norm_text: str, phrases: tuple[str, ...]) -> bool:
     latin = tuple(p for p in phrases if p.isascii())
     arabic = tuple(_norm(p) for p in phrases if not p.isascii())
     return _has_phrase(norm_text, latin) or any(p in norm_text for p in arabic)
+
+
+def is_acknowledgement(text: str) -> bool:
+    """'ok', 'Yes.', 'thanks', 'تمام' -- a reply that states nothing."""
+    return _norm(text).strip(_BARE_STRIP) in _BARE_REPLIES
 
 
 def wants_to_skip(text: str) -> bool:
@@ -228,7 +237,7 @@ def normalize_answer(field: str, text: str) -> Optional[str]:
     if field == "skill_level":
         return _match_closed_set(value, _SKILL_PATTERNS)
 
-    if normalized in _BARE_REPLIES or len(_WORDS.findall(normalized)) == 0:
+    if normalized.strip(_BARE_STRIP) in _BARE_REPLIES or len(_WORDS.findall(normalized)) == 0:
         return None
 
     if field == "budget":

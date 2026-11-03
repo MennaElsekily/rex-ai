@@ -56,6 +56,9 @@ _RECOMMENDATION_EN = re.compile("|".join((
 
 _RECOMMENDATION_AR = (
     "رشح", "اقترح", "نصح", "نصيحه", "انسب", "مناسب لي", "مناسبه لي",
+    # The noun "a recommendation" ("عايز ترشيح كورس"): "رشح" is not inside
+    # "ترشيح" (the extra ي), so it needs its own cue.
+    "ترشيح",
     "اتعلم ايه", "ادرس ايه", "ابدا منين", "ابدا في", "عايز ابدا", "عاوز ابدا",
     "عايز اشتغل", "عايز ابقي", "عايز اكون", "اخد كورس", "اخد دوره", "اخذ دوره",
     "اخذ كورس", "حسب خلفيتي", "مساري المهني",
@@ -65,6 +68,21 @@ _RECOMMENDATION_AR = (
     # Learning goals ("عايز أتعلم الذكاء الاصطناعي").
     "عايز اتعلم", "عاوز اتعلم", "حابب اتعلم", "نفسي اتعلم", "اريد ان اتعلم",
     "اريد تعلم", "اود تعلم", "ارغب في تعلم",
+)
+
+# "I need course python", "I want a Python course", "looking for a course
+# in data analysis": the learner wants a course found for them. Checked
+# only after the course-question rules, so "I need the Python course
+# schedule" stays a question; "want to know which courses..." never matches.
+_NEEDS_A_COURSE_EN = re.compile(
+    r"\b(?:need|want|looking for|interested in|searching for)\s+(?!to\b)"
+    r"(?:(?!(?:to|which|what|about|know|if|whether)\b)[\w+#.-]+\s+){0,3}?"
+    rf"{_COURSE_WORD}\b"
+)
+_NEEDS_A_COURSE_AR = (
+    "عايز كورس", "عاوز كورس", "عايزه كورس", "محتاج كورس", "محتاجه كورس", "اريد كورس",
+    "عايز دوره", "عاوز دوره", "عايزه دوره", "محتاج دوره", "محتاجه دوره", "اريد دوره",
+    "ابحث عن دوره", "ابحث عن كورس", "بدور علي كورس", "بدور علي دوره",
 )
 
 _COURSE_NOUN_EN = re.compile(rf"\b{_COURSE_WORD}\b")
@@ -135,6 +153,20 @@ _SMALL_TALK_EN = re.compile(
 )
 _SMALL_TALK_AR = ("ازيك", "عامل ايه", "اخبارك", "انت مين", "مين انت", "من انت", "كيف حالك",
                   "تقدر تعمل ايه", "بتعمل ايه")
+
+
+_GREETING_EN = re.compile(
+    r"^\s*(?:hi|hello|hey|hiya|greetings|good (?:morning|afternoon|evening)|thanks?|thank you|bye|goodbye)\b"
+)
+_GREETING_AR = ("اهلا", "مرحبا", "السلام عليكم", "صباح الخير", "مساء الخير", "شكرا", "هاي", "ازيك")
+
+
+def is_greeting(text: str) -> bool:
+    """'Hello', 'Thanks!', 'أهلاً', 'مرحبا' -- answered with REX's greeting."""
+    if not isinstance(text, str):
+        return False
+    arabic = normalize_for_matching(text).strip()
+    return bool(_GREETING_EN.match(text.casefold())) or arabic.startswith(_GREETING_AR)
 
 
 def is_small_talk(text: str) -> bool:
@@ -231,5 +263,10 @@ def classify_course_intent(text: str, course_context: bool = False) -> str:
 
     if has_weak_cue and (has_course_word or course_context):
         return COURSE_QUESTION
+
+    if _NEEDS_A_COURSE_EN.search(latin) or any(
+        cue in candidate for candidate in (arabic, arabic_plain) for cue in _NEEDS_A_COURSE_AR
+    ):
+        return RECOMMENDATION
 
     return GENERAL

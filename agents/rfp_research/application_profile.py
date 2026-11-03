@@ -31,6 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from agents.sqlite_utils import connect
+
 from agents.rfp_research import opportunity_store
 
 DEFAULT_DOCUMENTS_DIR = Path(__file__).resolve().parent / "application_documents"
@@ -97,7 +99,7 @@ class ApplicationProfile:
         self.db_path = Path(db_path or opportunity_store.DEFAULT_DB_PATH)
         self.documents_dir = Path(documents_dir or DEFAULT_DOCUMENTS_DIR)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._connection = connect(self.db_path)
         self._lock = threading.Lock()
         with self._lock:
             self._connection.executescript(

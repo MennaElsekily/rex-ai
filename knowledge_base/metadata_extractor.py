@@ -91,6 +91,29 @@ _RESERVED = {
 }
 
 
+# Field names that identify a record ("Course ID", "course_code", "SKU",
+# "Ref No"). Also used by the parsers to pick a row's record id.
+IDENTITY_FIELD = re.compile(r"(?:^|[\s_\-.])(?:id|code|key|ref|sku|number|no)$", re.IGNORECASE)
+
+
+def identity_field(line: str) -> tuple[str, Any] | None:
+    """('course_id', 'AA-100') for a "Course ID: AA-100" line, else None."""
+    match = _FIELD_LINE.match(line)
+    if not match or match.group(1).strip().count(" ") > 4:
+        return None
+    key = normalize_field_name(match.group(1))
+    value = normalize_field_value(match.group(2))
+    if not key or value is None or not IDENTITY_FIELD.search(key):
+        return None
+    return key, value
+
+
+def is_field_line(line: str) -> bool:
+    """A "Key: value" line, as extract_explicit_fields() reads it."""
+    match = _FIELD_LINE.match(line)
+    return bool(match) and match.group(1).strip().count(" ") <= 4
+
+
 def normalize_field_name(name: str) -> str:
     """'Delivery Mode' -> 'delivery_mode'; Arabic letters are kept."""
     key = re.sub(r"[^0-9A-Za-z؀-ۿ]+", "_", str(name).strip().casefold()).strip("_")

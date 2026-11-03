@@ -79,7 +79,7 @@ def admin_orchestrator(tmp_path):
 
 
 def test_admin_orchestrator_registers_admin_agents_only(admin_orchestrator):
-    assert set(admin_orchestrator.agents) == {"rfp_research", "curriculum_research"}
+    assert set(admin_orchestrator.agents) == {"rfp_research", "curriculum_research", "document_generation", "marketing"}
     assert "rex_assistant" in admin_orchestrator.excluded_agents
 
 

@@ -32,6 +32,16 @@ User/Admin choice in the UI is not trusted for authorization.
   version or request changes (with notes), with an audit trail. PDFs are
   read here for download (rendered on demand if a version has none).
 
+- Documents (Agent 4): the agent generates drafts from approved curricula
+  only. Editing, approving and downloading happen here, behind the admin
+  session; a document has its own review status and audit trail, separate
+  from the curriculum's. Text copied from the curriculum cannot be edited.
+
+- Marketing campaigns (Agent 5): the agent writes pending-review campaigns from
+  approved courses only. Editing, approving and downloading happen here, behind
+  the admin session, with their own audit trail. Only the approved version of a
+  campaign can be downloaded; nothing is published, e-mailed or sent.
+
 This is a single shared passcode, suitable for a demo deployment: it
 proves "an admin is present", not which admin. Reviews are attributed to
 the admin session.
@@ -39,15 +49,23 @@ the admin session.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import hmac
+import re
 import secrets
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from agents.config import get_secret, get_setting
 from agents.curriculum_research import curriculum_tools
 from agents.curriculum_research.curriculum_store import STATUSES as CURRICULUM_STATUSES, CurriculumStore
+from agents.document_generation import document_tools
+from agents.document_generation.document_store import STATUSES as DOCUMENT_STATUSES, DocumentStore
+from agents.document_generation.schemas import EDITABLE_SOURCES, EDITABLE_TYPES
+from agents.marketing import composer as marketing_composer, marketing_tools
+from agents.marketing.marketing_store import MarketingStore, STATUSES as CAMPAIGN_STATUSES
 from agents.rfp_research.application_profile import DOCUMENT_TYPES, PROFILE_FIELDS, ApplicationProfile
 from agents.rfp_research.applications import ApplicationWorkflow
 from agents.rfp_research.opportunity_store import APPROVAL_STATUSES, OpportunityStore
@@ -55,6 +73,11 @@ from agents.rfp_research.opportunity_store import APPROVAL_STATUSES, Opportunity
 SESSION_IDLE_SECONDS = 30 * 60
 MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_SECONDS = 60
+# Failed attempts are counted per client (one browser session), so one client's mistakes cannot lock the administrators out.
+# A client that keeps opening new sessions to get fresh attempts is stopped by a ceiling over all clients together.
+MAX_FAILED_ATTEMPTS_ALL_CLIENTS = 25
+MAX_TRACKED_CLIENTS = 500
+DEFAULT_CLIENT = "default"
 
 # The request text sent with a search-form search; the form's choices
 # travel in context["search"].
@@ -75,6 +98,9 @@ class AdminService:
         application_profile: Optional[ApplicationProfile] = None,
         curriculum_store: Optional[CurriculumStore] = None,
         curriculum_documents_dir: Optional[str] = None,
+        document_store: Optional[DocumentStore] = None,
+        document_output_dir: Optional[str] = None,
+        marketing_store: Optional[MarketingStore] = None,
     ) -> None:
         """
         orchestrator_factory: builds the Admin orchestrator lazily, so
@@ -86,6 +112,11 @@ class AdminService:
         curriculum_store / curriculum_documents_dir: for tests; default to
         the database and PDF folder the Curriculum MCP server uses
         (CURRICULUM_DB_PATH / CURRICULUM_DOCUMENTS_DIR).
+        document_store / document_output_dir: for tests; default to the
+        database and PDF folder the Document MCP server uses
+        (DOCUMENT_DB_PATH / DOCUMENT_OUTPUT_DIR).
+        marketing_store: for tests; defaults to the database the Marketing MCP
+        server uses (MARKETING_DB_PATH).
         """
         self._orchestrator_factory = orchestrator_factory
         self._orchestrator = None
@@ -94,12 +125,19 @@ class AdminService:
         self._curriculum_store = curriculum_store
         self._curriculum_documents_dir = curriculum_documents_dir
         self._curriculum_toolbox: Optional[curriculum_tools.CurriculumToolbox] = None
+        self._document_store = document_store
+        self._document_output_dir = document_output_dir
+        self._document_toolbox: Optional[document_tools.DocumentToolbox] = None
+        self._marketing_store = marketing_store
+        self._marketing_toolbox: Optional[marketing_tools.MarketingToolbox] = None
         self._application_workflow: Optional[ApplicationWorkflow] = None
         self._passcode = passcode if passcode is not None else get_secret("REX_ADMIN_PASSCODE")
         self._clock = clock
         self._sessions: dict[str, float] = {}
-        self._failed_attempts = 0
-        self._locked_until = 0.0
+        self._failures: dict[str, int] = {}
+        self._locked_until: dict[str, float] = {}
+        self._all_failures = 0
+        self._all_locked_until = 0.0
 
     # ---------------------------------------------------------------- auth
 
@@ -107,28 +145,51 @@ class AdminService:
     def enabled(self) -> bool:
         return bool(self._passcode)
 
-    def login(self, candidate: str) -> Optional[str]:
-        """A new session token for the right passcode, else None."""
+    def login(self, candidate: str, client_id: Optional[str] = None) -> Optional[str]:
+        """
+        A new session token for the right passcode, else None. client_id names the caller (the app passes one id per browser
+        session) so that the lockout after repeated wrong passcodes applies to that caller only.
+        """
         now = self._clock()
-        if not self.enabled or now < self._locked_until:
+        client = client_id or DEFAULT_CLIENT
+        if not self.enabled or self._is_locked(client, now):
             return None
 
         if not isinstance(candidate, str) or not hmac.compare_digest(
             candidate.encode("utf-8"), self._passcode.encode("utf-8")
         ):
-            self._failed_attempts += 1
-            if self._failed_attempts >= MAX_FAILED_ATTEMPTS:
-                self._locked_until = now + LOCKOUT_SECONDS
-                self._failed_attempts = 0
+            self._record_failure(client, now)
             return None
 
-        self._failed_attempts = 0
+        self._failures.pop(client, None)
         token = secrets.token_urlsafe(32)
         self._sessions[token] = now + SESSION_IDLE_SECONDS
         return token
 
-    def is_locked(self) -> bool:
-        return self._clock() < self._locked_until
+    def is_locked(self, client_id: Optional[str] = None) -> bool:
+        return self._is_locked(client_id or DEFAULT_CLIENT, self._clock())
+
+    def _is_locked(self, client: str, now: float) -> bool:
+        return now < self._all_locked_until or now < self._locked_until.get(client, 0.0)
+
+    def _record_failure(self, client: str, now: float) -> None:
+        self._forget_expired(now)
+        self._failures[client] = self._failures.get(client, 0) + 1
+        if self._failures[client] >= MAX_FAILED_ATTEMPTS:
+            self._locked_until[client] = now + LOCKOUT_SECONDS
+            self._failures.pop(client)
+        self._all_failures += 1
+        if self._all_failures >= MAX_FAILED_ATTEMPTS_ALL_CLIENTS:
+            self._all_locked_until = now + LOCKOUT_SECONDS
+            self._all_failures = 0
+
+    def _forget_expired(self, now: float) -> None:
+        """Keeps the per-client records bounded: expired lockouts go, and the oldest records go past the limit."""
+        for client in [c for c, until in self._locked_until.items() if until <= now]:
+            del self._locked_until[client]
+        for records in (self._failures, self._locked_until):
+            while len(records) >= MAX_TRACKED_CLIENTS:
+                del records[next(iter(records))]
 
     def logout(self, token: Optional[str]) -> None:
         self._sessions.pop(token or "", None)
@@ -376,6 +437,267 @@ class AdminService:
             documents = [rendered["document"]]
             data = tools.document_bytes(rendered["document"]["document_id"])
         return {"filename": documents[-1]["filename"], "data": data}
+
+
+    # ------------------------------------------------------- documents
+
+    def _documents(self) -> document_tools.DocumentToolbox:
+        """
+        Agent 4's documents, opened in this process for review, editing and
+        download. Curricula are read through the same store the review tab
+        uses; approval of a curriculum is never touched here.
+        """
+        if self._document_toolbox is None:
+            store = self._document_store or DocumentStore(get_setting(document_tools.DB_SETTING, "") or None)
+            self._document_toolbox = document_tools.DocumentToolbox(
+                store=store, curricula=self._curricula().store,
+                documents_dir=Path(self._document_output_dir) if self._document_output_dir else None)
+        return self._document_toolbox
+
+    def list_approved_curricula(self, token: str, limit: int = 200, offset: int = 0) -> dict:
+        """
+        One page of the curricula that have an approved version, the only ones
+        documents can be built from: {"curricula", "total", "has_more", "offset"}.
+        A failure is raised (ValueError), never reported as "none approved".
+        """
+        self._require(token)
+        result = self._documents().list_approved_curricula(limit, offset)
+        if result.get("status") != "ok":
+            raise ValueError(result.get("message") or "The approved curricula could not be listed.")
+        return result
+
+    def generate_document(
+        self, token: str, curriculum_id: str, document_type: str, language: Optional[str] = None,
+        extra: Optional[dict] = None, document_id: Optional[str] = None, context: Optional[dict] = None,
+    ) -> dict:
+        """
+        Ask the Document agent (through the Admin orchestrator) for a document
+        from the form's choices. document_id regenerates: a new version of
+        that document. The agent writes a draft; nothing is approved here.
+        """
+        request = {"curriculum_id": curriculum_id, "document_type": document_type, "language": language or None,
+                   "extra": dict(extra or {}), "document_id": document_id or None}
+        return self.ask(token, f"Generate a {document_type.replace('_', ' ')} for {curriculum_id}",
+                        {**(context or {}), "document_request": request})
+
+    def list_documents(self, token: str, status: Optional[str] = None, curriculum_id: Optional[str] = None,
+                       limit: int = 100, offset: int = 0) -> list[dict]:
+        """One page of documents, newest first (status is the latest version's)."""
+        self._require(token)
+        if status is not None and status not in DOCUMENT_STATUSES:
+            raise ValueError(f"Unknown document status: {status}")
+        return self._documents().store.list(status, curriculum_id or None, limit, offset)
+
+    def document_counts(self, token: str) -> dict:
+        self._require(token)
+        return self._documents().store.counts()
+
+    def get_document(self, token: str, document_id: str, version: Optional[int] = None) -> Optional[dict]:
+        """One version with its version list, validation and audit history (None if unknown)."""
+        self._require(token)
+        store = self._documents().store
+        record = store.get(document_id, version)
+        if record is None:
+            return None
+        curriculum = self._curricula().store.get(record["curriculum_id"])
+        return {"document": record, "versions": store.versions(document_id),
+                "audit": store.audit_trail(document_id),
+                # The curriculum has since been revised or is no longer the approved version.
+                "curriculum_changed": bool(curriculum and curriculum.get("approved_version") != record["curriculum_version"])}
+
+    def edit_document(self, token: str, document_id: str, edits: list[dict], summary: Optional[str] = None) -> dict:
+        """
+        Save an edited copy of the current version as a new version.
+        edits: [{"section": key, "block": index, "value": text or list of lines}]. Only text the model or an
+        administrator wrote can be edited; text taken from the approved curriculum is refused (and would be
+        rejected by the document tool's own validation too). The new version needs review again.
+        """
+        admin = self._require(token)
+        tools = self._documents()
+        record = tools.store.get(document_id)
+        if record is None:
+            raise ValueError("Unknown document.")
+        content = copy.deepcopy(record["content"])
+        sections = {s["key"]: s for s in content["sections"]}
+        for edit in edits or []:
+            section = sections.get(edit.get("section"))
+            blocks = section["blocks"] if section else []
+            index = edit.get("block")
+            if not isinstance(index, int) or not 0 <= index < len(blocks):
+                raise ValueError("That part of the document does not exist.")
+            block = blocks[index]
+            if block.get("source") not in EDITABLE_SOURCES or block.get("type") not in EDITABLE_TYPES:
+                raise ValueError("Text taken from the approved curriculum cannot be edited here: revise and "
+                                 "re-approve the curriculum instead.")
+            value = edit.get("value")
+            if block["type"] == "paragraph":
+                block["text"] = " ".join(str(value or "").split())
+            else:
+                lines = value if isinstance(value, list) else str(value or "").splitlines()
+                block["items"] = [re.sub(r"^\s*[-•*]\s*", "", str(line)).strip() for line in lines if str(line).strip()]
+            block["source"] = "admin"
+        saved = tools.save_admin_edit(content, document_id, admin, summary)
+        if saved.get("status") != "ok":
+            raise ValueError(saved.get("message") or "The edit could not be saved.")
+        rendered = tools.render_document_pdf(document_id, saved["version"])
+        if rendered.get("status") != "ok":
+            raise ValueError(rendered.get("message") or "The PDF could not be rendered.")
+        return saved
+
+    def approve_document(self, token: str, document_id: str, version: int, notes: Optional[str] = None) -> dict:
+        """
+        Approve the current version (it must be pending review); audited under
+        this admin session. The curriculum version it was built from must
+        still be an approved one. Its PDF is created first if needed.
+        """
+        admin = self._require(token)
+        tools = self._documents()
+        record = tools.store.get(document_id, int(version))
+        if record is None:
+            raise ValueError("Unknown document or version.")
+        if not record["filename"]:   # the review PDF (normally made at generation)
+            rendered = tools.render_document_pdf(document_id, int(version))
+            if rendered.get("status") != "ok":
+                raise ValueError(rendered.get("message") or "The PDF could not be rendered.")
+        # Makes the approved PDF first; the approval is recorded only if that worked.
+        return tools.approve_document(document_id, int(version), admin, notes)
+
+    def document_pdf(self, token: str, document_id: str, version: Optional[int] = None) -> Optional[dict]:
+        """
+        {"filename", "data", "approved"} for one version's PDF: the approved PDF
+        of an approved version, otherwise the review PDF (rendered first if it
+        has none). None if unknown.
+        """
+        self._require(token)
+        tools = self._documents()
+        record = tools.store.get(document_id, version)
+        if record is None:
+            return None
+        # "approved" means the file is the approved PDF. A version approved before approved PDFs existed has
+        # none: it is served its review PDF (and reported as such) rather than failing.
+        approved = record["version_status"] == "approved"
+        if not record["filename"] and not (approved and record["approved_filename"]):
+            rendered = tools.render_document_pdf(document_id, record["version"])
+            if rendered.get("status") != "ok":
+                raise ValueError(rendered.get("message") or "The PDF could not be rendered.")
+            record = rendered["document"]
+        data = tools.document_bytes(document_id, record["version"])
+        if data is None:
+            raise ValueError("The PDF file is missing from the document folder.")
+        has_approved_file = approved and bool(record["approved_filename"])
+        return {"filename": record["approved_filename"] if has_approved_file else record["filename"], "data": data,
+                "approved": has_approved_file}
+
+    def approved_curriculum_pdf(self, token: str, curriculum_id: str) -> dict:
+        """
+        {"filename", "data", "pages", "version", "language"}: Agent 3's own PDF of this curriculum's approved version,
+        for the Documents tab's "Curriculum PDF" choice. Read-only and not a generated document (no record, no review);
+        raises ValueError with the reason if the curriculum has no approved version.
+        """
+        self._require(token)
+        return self._documents().approved_curriculum_pdf(curriculum_id)
+
+    def document_audit_trail(self, token: str, document_id: Optional[str] = None) -> list[dict]:
+        self._require(token)
+        return self._documents().store.audit_trail(document_id)
+
+
+    # -------------------------------------------------------- marketing
+
+    def _marketing(self) -> marketing_tools.MarketingToolbox:
+        """
+        Agent 5's campaigns, opened in this process for review, editing and download. Courses are read through the
+        Curriculum Agent's store; approval of a curriculum is never touched here.
+        """
+        if self._marketing_toolbox is None:
+            store = self._marketing_store or MarketingStore(get_setting(marketing_tools.DB_SETTING, "") or None)
+            self._marketing_toolbox = marketing_tools.MarketingToolbox(store=store, curricula=self._curricula().store)
+        return self._marketing_toolbox
+
+    def list_approved_courses(self, token: str, limit: int = 200, offset: int = 0) -> dict:
+        """
+        One page of the courses that have an approved version, the only ones campaigns can be written for:
+        {"courses", "total", "has_more", "offset"}. A failure is raised (ValueError), never reported as "none approved".
+        """
+        self._require(token)
+        result = self._marketing().list_approved_courses(limit, offset)
+        if result.get("status") != "ok":
+            raise ValueError(result.get("message") or "The approved courses could not be listed.")
+        return result
+
+    def generate_campaign(self, token: str, request: dict, context: Optional[dict] = None) -> dict:
+        """
+        Ask the Marketing agent (through the Admin orchestrator) for a campaign from the form's choices: {"curriculum_id",
+        "audience"?, "tone"?, "goal"?, "notes"?, "channels"?, "variations"?, "campaign_id"? (a new version of that
+        campaign)}. The agent writes a pending-review campaign; nothing is approved, published or sent here.
+        """
+        return self.ask(token, f"Create a marketing campaign for {request.get('curriculum_id')}",
+                        {**(context or {}), "marketing_request": dict(request or {})})
+
+    def list_campaigns(self, token: str, status: Optional[str] = None, curriculum_id: Optional[str] = None,
+                       limit: int = 100, offset: int = 0) -> list[dict]:
+        """One page of campaigns, newest first (status is the latest version's)."""
+        self._require(token)
+        if status is not None and status not in CAMPAIGN_STATUSES:
+            raise ValueError(f"Unknown campaign status: {status}")
+        return self._marketing().store.list(status, curriculum_id or None, limit, offset)
+
+    def campaign_counts(self, token: str) -> dict:
+        self._require(token)
+        return self._marketing().store.counts()
+
+    def get_campaign(self, token: str, campaign_id: str, version: Optional[int] = None) -> Optional[dict]:
+        """One version with its version list, validation and audit history (None if unknown)."""
+        self._require(token)
+        store = self._marketing().store
+        record = store.get(campaign_id, version)
+        if record is None:
+            return None
+        curriculum = self._curricula().store.get(record["curriculum_id"])
+        return {"campaign": record, "versions": store.versions(campaign_id), "audit": store.audit_trail(campaign_id),
+                # The course has since been revised or is no longer the approved version.
+                "course_changed": bool(curriculum and curriculum.get("approved_version") != record["curriculum_version"])}
+
+    def edit_campaign(self, token: str, campaign_id: str, edits: list[dict], summary: Optional[str] = None) -> dict:
+        """
+        Save an edited copy of the current version as a new version. edits: [{"path": [...], "value": text}] where a
+        path names a text of the strategy or of one variation (marketing/composer.editable_paths); the course facts
+        cannot be edited. The new version is checked again and needs review again; one that fails the checks is kept as
+        a draft and cannot be approved.
+        """
+        admin = self._require(token)
+        tools = self._marketing()
+        record = tools.store.get(campaign_id)
+        if record is None:
+            raise ValueError("Unknown campaign.")
+        content = copy.deepcopy(record["content"])
+        for edit in edits or []:
+            marketing_composer.apply_edit(content, list(edit.get("path") or []), edit.get("value"))
+        saved = tools.save_admin_edit(content, campaign_id, admin, summary)
+        if saved.get("status") != "ok":
+            raise ValueError(saved.get("message") or "The edit could not be saved.")
+        return saved
+
+    def approve_campaign(self, token: str, campaign_id: str, version: int, notes: Optional[str] = None) -> dict:
+        """
+        Approve the current version (it must be pending review); audited under this admin session. The course version
+        it was written from must still be an approved one. Approval makes the content downloadable; it does not
+        publish or send anything.
+        """
+        admin = self._require(token)
+        try:
+            return self._marketing().approve_campaign(campaign_id, int(version), admin, notes)
+        except (ValueError, LookupError) as exc:
+            raise ValueError(str(exc)) from exc
+
+    def campaign_export(self, token: str, campaign_id: str, fmt: str = "markdown") -> dict:
+        """{"filename", "data", "mime", "version"} of the APPROVED version (markdown or json); ValueError if none is approved."""
+        self._require(token)
+        return self._marketing().approved_export(campaign_id, fmt)
+
+    def campaign_audit_trail(self, token: str, campaign_id: Optional[str] = None) -> list[dict]:
+        self._require(token)
+        return self._marketing().store.audit_trail(campaign_id)
 
 
 class _NoCatalogue:

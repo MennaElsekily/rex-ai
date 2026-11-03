@@ -34,6 +34,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from agents.sqlite_utils import connect, write_transaction
+
 DEFAULT_DB_PATH = Path(__file__).resolve().parent / "curricula.sqlite3"
 
 DRAFT = "draft"
@@ -70,7 +72,7 @@ class CurriculumStore:
         # The default is read when the store opens, so tests can redirect it.
         self.db_path = Path(db_path or DEFAULT_DB_PATH)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._connection = connect(self.db_path)
         self._lock = threading.Lock()
         with self._lock:
             self._connection.executescript(
@@ -157,7 +159,7 @@ class CurriculumStore:
             raise CurriculumStoreError("A curriculum with a title is required.")
         status = PENDING_REVIEW if validation.get("valid") else DRAFT
         now = _now()
-        with self._lock:
+        with write_transaction(self._connection, self._lock, CurriculumStoreError):
             if curriculum_id is None:
                 curriculum_id = f"CUR-{uuid.uuid4().hex[:12]}"
                 version = 1
@@ -194,7 +196,6 @@ class CurriculumStore:
                  _json(alignment) if alignment else None, _json(sources or []), change_summary, now, created_by),
             )
             self._audit(curriculum_id, version, "version_saved", previous_status, status, created_by, change_summary)
-            self._connection.commit()
         return {"curriculum_id": curriculum_id, "version": version, "status": status}
 
     # ----------------------------------------------------------- reading
@@ -236,6 +237,20 @@ class CurriculumStore:
             columns = [d[0] for d in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
+    def list_approved(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        """Curricula that have an approved version (read-only), newest first, paged."""
+        with self._lock:
+            cursor = self._connection.execute(
+                "SELECT * FROM curricula WHERE approved_version IS NOT NULL ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (max(1, int(limit)), max(0, int(offset))))
+            columns = [d[0] for d in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def count_approved(self) -> int:
+        with self._lock:
+            return self._connection.execute(
+                "SELECT COUNT(*) FROM curricula WHERE approved_version IS NOT NULL").fetchone()[0]
+
     def versions(self, curriculum_id: str) -> list[dict[str, Any]]:
         check_curriculum_id(curriculum_id)
         with self._lock:
@@ -270,26 +285,32 @@ class CurriculumStore:
     def _review(self, curriculum_id: str, version: int, reviewer: str, new_status: str, notes: Optional[str]):
         if not isinstance(reviewer, str) or not reviewer.strip() or reviewer.startswith("system:"):
             raise CurriculumStoreError("An administrator identity is required.")
-        record = self.get(curriculum_id, version)
-        if record is None:
-            raise CurriculumStoreError(f"Unknown curriculum {curriculum_id} version {version}.")
-        if version != record["current_version"]:
-            raise CurriculumStoreError("Only the current version can be reviewed.")
-        if record["status"] != PENDING_REVIEW:
-            raise CurriculumStoreError(
-                f"This version is {record['status']}: only a version pending review can be reviewed.")
-        with self._lock:
+        check_curriculum_id(curriculum_id)
+        # The checks and the change are ONE transaction that holds the database's write lock from the start: two reviewers
+        # (two processes) cannot both pass the check and both change the status. The state is read again here, inside it.
+        with write_transaction(self._connection, self._lock, CurriculumStoreError):
+            row = self._connection.execute(
+                "SELECT c.current_version, v.status FROM curricula c JOIN curriculum_versions v "
+                "ON v.curriculum_id = c.curriculum_id AND v.version = ? WHERE c.curriculum_id = ?",
+                (version, curriculum_id)).fetchone()
+            if row is None:
+                raise CurriculumStoreError(f"Unknown curriculum {curriculum_id} version {version}.")
+            current_version, status = row
+            if version != current_version:
+                raise CurriculumStoreError("Only the current version can be reviewed.")
+            if status != PENDING_REVIEW:
+                raise CurriculumStoreError(
+                    f"This version is {status}: only a version pending review can be reviewed.")
             self._connection.execute(
                 "UPDATE curricula SET status = ?, approved_version = CASE WHEN ? = 'approved' THEN ? "
                 "ELSE approved_version END, updated_at = ? WHERE curriculum_id = ?",
                 (new_status, new_status, version, _now(), curriculum_id),
             )
             self._connection.execute(
-                "UPDATE curriculum_versions SET status = ? WHERE curriculum_id = ? AND version = ?",
-                (new_status, curriculum_id, version),
+                "UPDATE curriculum_versions SET status = ? WHERE curriculum_id = ? AND version = ? AND status = ?",
+                (new_status, curriculum_id, version, PENDING_REVIEW),
             )
-            self._audit(curriculum_id, version, "review", record["status"], new_status, reviewer.strip(), notes)
-            self._connection.commit()
+            self._audit(curriculum_id, version, "review", status, new_status, reviewer.strip(), notes)
         return self.get(curriculum_id, version)
 
     def approve(self, curriculum_id: str, version: int, reviewer: str, notes: Optional[str] = None):
@@ -308,14 +329,13 @@ class CurriculumStore:
                      data: bytes, pages: int) -> dict[str, Any]:
         check_curriculum_id(curriculum_id)
         document_id = f"DOC-{uuid.uuid4().hex[:12]}"
-        with self._lock:
+        with write_transaction(self._connection, self._lock, CurriculumStoreError):
             self._connection.execute(
                 "INSERT INTO curriculum_documents (document_id, curriculum_id, version, language, filename, "
                 "sha256, pages, size_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (document_id, curriculum_id, version, language, filename, hashlib.sha256(data).hexdigest(),
                  pages, len(data), _now()),
             )
-            self._connection.commit()
         return self.document(document_id)
 
     def document(self, document_id: str) -> Optional[dict[str, Any]]:

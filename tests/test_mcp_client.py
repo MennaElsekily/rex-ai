@@ -36,12 +36,22 @@ def test_search_tool_round_trip_returns_structured_evidence(client):
 
 
 def test_the_server_lists_its_tool_with_a_schema(client):
-    [tool] = client.list_tools()
+    tools = {tool["name"]: tool for tool in client.list_tools()}
+    tool = tools["search_knowledge_base"]
 
-    assert tool["name"] == "search_knowledge_base"
+    assert set(tools) == {"search_knowledge_base", "list_courses"}
     assert tool["description"]
     assert tool["input_schema"]["required"] == ["question"]
     assert set(tool["input_schema"]["properties"]) == {"question", "retrieval_query", "metadata_filter"}
+
+
+def test_course_list_tool_round_trip(client):
+    # Two-mode REX, Phase 4: the read-only course list REX identifies
+    # courses with.
+    result = client.list_courses()
+
+    assert result["status"] == "ok"
+    assert result["courses"][0] == {"course_id": "DA-301", "course_name": "Python for Data Analysis"}
 
 
 def test_unset_optional_arguments_use_the_server_defaults(client):

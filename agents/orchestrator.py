@@ -6,8 +6,10 @@ from uuid import uuid4
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
+from agents.multilingual import detect_conversation_language
 from agents.multilingual import detect_language as _detect_language
 from agents.course_intent import GENERAL, classify_course_intent
+from agents.routing import deliverables
 from agents.text_utils import normalize_for_matching
 
 
@@ -95,7 +97,7 @@ _EXCLUDED_MESSAGE = {
 
 class Orchestrator:
     """
-    Agent 6: routes Arabic and English requests to specialist agents.
+    The orchestrator: routes Arabic and English requests to the five specialist agents.
 
     Language detection and routing use deterministic Python rules.
     RAG is not implemented here; specialist agents can call the
@@ -136,6 +138,32 @@ class Orchestrator:
         )
 
         self.graph = graph.compile()
+        # The last confidently detected language per conversation_id, so a
+        # short reply ("ok", "5000", "yes") keeps the conversation's
+        # language instead of falling back to English. In memory, bounded.
+        self._conversation_languages: dict[str, str] = {}
+
+    MAX_REMEMBERED_CONVERSATIONS = 1000
+
+    def _resolve_language(self, user_input: str, context: dict[str, Any]) -> str:
+        """
+        An explicit UI choice first, then a confident detection of this
+        message (knowledge_base/language.py, the same detector REX uses),
+        then this conversation's previous language, then English.
+        """
+        if context.get("preferred_language") in ("ar", "en"):
+            return context["preferred_language"]
+        detected = detect_conversation_language(user_input)
+        conversation_id = context.get("conversation_id")
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            return detected or "en"
+        if detected is None:
+            return self._conversation_languages.get(conversation_id, "en")
+        self._conversation_languages.pop(conversation_id, None)  # most recent last
+        self._conversation_languages[conversation_id] = detected
+        while len(self._conversation_languages) > self.MAX_REMEMBERED_CONVERSATIONS:
+            self._conversation_languages.pop(next(iter(self._conversation_languages)))
+        return detected
 
     @staticmethod
     def detect_language(text: str) -> str:
@@ -189,12 +217,9 @@ class Orchestrator:
             )
 
         request_context = dict(context or {})
-        # An explicit UI language choice wins over per-message detection.
-        language = (
-            request_context.get("preferred_language")
-            if request_context.get("preferred_language") in ("ar", "en")
-            else self.detect_language(user_input)
-        )
+        # An explicit UI language choice wins over per-message detection;
+        # unclear short replies keep the conversation's language.
+        language = self._resolve_language(user_input, request_context)
         request_context["language"] = language
 
         request = {
@@ -222,7 +247,15 @@ class Orchestrator:
 
     def _plan_node(self, state: OrchestratorState) -> dict[str, Any]:
         request = state["request"]
-        plan = self._make_plan(request["user_input"])
+        # A document type and curriculum chosen in the admin form are an
+        # explicit request: no keyword guessing.
+        if isinstance((request.get("context") or {}).get("document_request"), dict):
+            plan = ["document_generation"]
+        # Likewise a course, audience and channels chosen in the Marketing tab.
+        elif isinstance((request.get("context") or {}).get("marketing_request"), dict):
+            plan = ["marketing"]
+        else:
+            plan = self._make_plan(request["user_input"])
 
         if not plan:
             plan = self._plan_from_open_conversation(request)
@@ -321,29 +354,14 @@ class Orchestrator:
         # "Create/design a course ..." has no curriculum keyword but is
         # a request the Curriculum Research Agent handles.
         course_creation = self._is_course_creation(original_text)
-        marketing_terms = (
-            "marketing",
-            "campaign",
-            "social media",
-            "advertisement",
-            "advertising",
-            "linkedin post",
-            "promotional",
-            "تسويق",
-            "حملة تسويقية",
-            "وسائل التواصل الاجتماعي",
-            "إعلان",
-            "اعلان",
-        )
 
-        if (
-            (
-                course_creation
-                or any(term in text for term in curriculum_terms)
-            )
-            and any(term in text for term in marketing_terms)
-        ):
-            return ["curriculum_research", "marketing"]
+        # What the request asks FOR (agents/routing.py). A topic such as "a curriculum about digital marketing" is a
+        # subject, not a marketing request; a sentence with two deliverables ("a question bank and a marketing campaign",
+        # "a curriculum and a course proposal") runs every agent that was asked for, in the order curriculum, documents,
+        # marketing. Nothing is routed to Marketing because of the bare word "marketing".
+        asked = deliverables(original_text, self._is_course_creation)
+        if len(asked) >= 2:
+            return asked
 
         # Agent 2: RFP and tender research.
         if any(term in text for term in (
@@ -365,6 +383,11 @@ class Orchestrator:
         )):
             return ["rfp_research"]
 
+        # One explicit deliverable: a supported document (Agent 4) or marketing content (Agent 5). Before the curriculum
+        # keywords, because such a request often names a curriculum ("a course description for curriculum CUR-...").
+        if asked in (["document_generation"], ["marketing"]):
+            return asked
+
         # Agent 3: curriculum research and accreditation alignment, and
         # catalogue planning (new courses, catalogue gaps).
         if course_creation or self._is_catalogue_planning(original_text) or any(term in text for term in curriculum_terms + (
@@ -382,10 +405,6 @@ class Orchestrator:
             "منهج تدريبي",
         )):
             return ["curriculum_research"]
-
-        # Agent 5: educational marketing.
-        if any(term in text for term in marketing_terms):
-            return ["marketing"]
 
         # Agent 4: educational document generation.
         if any(term in text for term in (

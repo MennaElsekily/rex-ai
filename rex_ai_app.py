@@ -3,7 +3,7 @@ REX AI -- one Streamlit app, two doors.
 
     User  -> REX Assistant directly (agents/user_service.py)
     Admin -> passcode checked on the server (agents/admin_service.py)
-          -> Admin orchestrator -> RFP Research, Curriculum Research
+          -> Admin orchestrator -> RFP Research, Curriculum Research, Document Generation, Marketing
              (REX Assistant excluded)
 
 The User/Admin choice on the welcome screen is navigation only. Admin
@@ -28,6 +28,8 @@ import streamlit as st
 from agents import admin_service as admin_module
 from agents import register_agents
 from agents import user_service as user_module
+from agents.document_generation.templates import CURRICULUM_PDF, EXTRA_FIELDS, TEMPLATES, field_label, type_label
+from agents.marketing import schemas as marketing_schemas
 from agents.rfp_research.state import ALLOWED_COUNTRIES, TRAINING_CATEGORIES
 
 # --------------------------------------------------------------------
@@ -188,6 +190,118 @@ T = {
         "metric_applied": "Applied",
         "metric_manual": "Needs manual action",
         "done": "Saved.",
+        # Marketing (Agent 5)
+        "tab_marketing": "Marketing",
+        "mk_intro": "Create marketing campaigns for an approved course: a simple strategy and several variations of social "
+                    "captions, ad copy, LinkedIn posts, e-mail, WhatsApp messages, headlines and calls to action. Every "
+                    "campaign waits for your approval. Nothing is published, e-mailed or sent: approved content can only "
+                    "be downloaded.",
+        "mk_status": {"draft": "Draft", "pending_review": "Pending review", "approved": "Approved"},
+        "mk_new": "New campaign",
+        "mk_none_approved": "No course is approved yet. Approve a curriculum in the Curricula tab first.",
+        "mk_list_error": "The approved courses could not be listed: {error}",
+        "mk_showing": "Showing {shown} of {total} approved courses.",
+        "mk_course": "Approved course",
+        "mk_audience": "Target audience (confirm or change)",
+        "mk_audience_from_course": "Taken from the approved course. Change it only if this campaign targets someone else.",
+        "mk_audience_missing": "The approved course does not state its target audience. Describe who this campaign is for.",
+        "mk_tone": "Tone",
+        "mk_channels": "Content to generate",
+        "mk_variations": "Variations of each",
+        "mk_goal": "Campaign goal (optional)",
+        "mk_notes": "Extra facts you supply (optional, for example a start date)",
+        "mk_language_note": "Language: {language}. A campaign is written in its course's language and is not translated.",
+        "mk_generate": "Create campaign",
+        "mk_generating": "Writing the campaign. This can take several minutes on a small local model (one part at a time). "
+                         "Nothing is saved until every part has passed the checks.",
+        "mk_progress": "Writing {label}: step {done} of {total}",
+        "mk_progress_saving": "All parts written. Checking and saving…",
+        "mk_need_channel": "Choose at least one kind of content.",
+        "mk_filter": "Filter by status",
+        "mk_all": "All",
+        "mk_none": "No campaigns yet.",
+        "mk_page": "Page",
+        "mk_version": "Version",
+        "mk_current": "current",
+        "mk_approved_tag": "version {n} is approved",
+        "mk_audience_label": "Target audience",
+        "mk_tone_label": "Tone",
+        "mk_course_changed": "The course has a newer approved version than the one this campaign was written from.",
+        "mk_problems": "Problems that must be fixed before this version can be approved",
+        "mk_strategy": "Campaign strategy",
+        "mk_objective": "Objective",
+        "mk_main_message": "Main message",
+        "mk_rec_channels": "Recommended channels",
+        "mk_sequence": "Suggested content sequence (step {n})",
+        "mk_cta": "Call to action",
+        "mk_variation": "Variation {n}",
+        "mk_edit_approved": "Version {n} is approved. Saving an edit creates a new version that needs approval; the approved version stays as it is.",
+        "mk_save_edit": "Save edits as a new version",
+        "mk_unchanged": "No changes to save.",
+        "mk_edited_msg": "Saved as a new version.",
+        "mk_edit_draft": "Saved, but it does not pass the checks, so it is a draft and cannot be approved until the problems are fixed.",
+        "mk_hashtags": "Hashtags (separated by spaces)",
+        "mk_review_notes": "Review notes (optional)",
+        "mk_approve": "Approve this version",
+        "mk_approved_msg": "Approved. It can now be downloaded. Nothing was published or sent.",
+        "mk_not_reviewable": "Only the current version, while it is pending review, can be approved.",
+        "mk_download_note": "Downloads are the approved version {n} only.",
+        "mk_download_md": "Download approved version (Markdown)",
+        "mk_download_json": "Download approved version (JSON)",
+        "mk_nothing_to_download": "Nothing to download yet: draft and pending-review content is not ready for use. Approve a version first.",
+        "mk_regenerate": "Write a new version with the same choices",
+        "mk_audit": "Review history",
+        # Documents (Agent 4)
+        "tab_documents": "Documents",
+        "doc_intro": "Generate training documents from an approved curriculum, review and edit the text the AI wrote, "
+                     "then approve the final version and download the PDF. Text copied from the curriculum cannot be "
+                     "edited here: revise and re-approve the curriculum instead.",
+        "doc_status": {"draft": "Draft", "pending_review": "Pending review", "approved": "Approved"},
+        "doc_new": "New document",
+        "doc_none_approved": "No curriculum is approved yet. Approve one in the Curricula tab first.",
+        "doc_curriculum": "Approved curriculum",
+        "doc_type": "Document type",
+        "doc_format": "Training format (optional)",
+        "doc_org": "Organisation or client (optional)",
+        "doc_schedule": "Schedule notes (optional)",
+        "doc_generate": "Generate document",
+        "doc_none": "No documents yet.",
+        "doc_filter": "Show",
+        "doc_all": "All",
+        "doc_version": "Version",
+        "doc_current": "current",
+        "doc_curriculum_changed": "The curriculum has been revised since this document was built. It still uses the "
+                                  "approved version it names.",
+        "doc_missing": "Not specified in the curriculum (marked in the document)",
+        "doc_problems": "Validation problems",
+        "doc_edit_hint": "Editable text (written by the AI or an administrator)",
+        "doc_save_edit": "Save edits as a new version",
+        "doc_edited_msg": "Saved as a new version. It needs review again.",
+        "doc_notes": "Review notes (optional)",
+        "doc_approve": "Approve this version",
+        "doc_approved_msg": "Document approved.",
+        "doc_regenerate": "Regenerate (new version)",
+        "doc_not_reviewable": "Only the current version, while it is pending review, can be approved.",
+        "doc_pdf_download": "Download PDF",
+        "doc_pdf_create": "Create PDF",
+        "doc_audit": "Review history",
+        "doc_unchanged": "No changes to save.",
+        "doc_approved_tag": "approved v{n}",
+        "doc_edit_approved": "This version is approved. Saving your edits creates a new version for review; "
+                             "version {n} stays the approved one until the new version is approved.",
+        "doc_approved_pdf": "Download approved PDF",
+        "doc_review_pdf": "Download PDF (review copy)",
+        "doc_page": "Page",
+        "doc_showing": "Showing {shown} of {total} approved curricula (most recent first).",
+        "doc_list_error": "The approved curricula could not be listed: {error}",
+        "doc_generating": "Generating the document. This can take several minutes (the model writes one module at a "
+                          "time). Nothing is saved until every part has passed the checks.",
+        "doc_progress": "Writing {label}: step {done} of {total}",
+        "doc_progress_saving": "All parts written. Checking, saving and creating the PDF…",
+        "doc_language_note": "Language: {language}. A document is written in its curriculum's language and is not translated.",
+        "doc_cpdf_note": "The Curriculum PDF is the Curriculum Agent's own PDF of the approved version. It is not a "
+                         "generated document: nothing is created or reviewed here.",
+        "doc_cpdf_download": "Download curriculum PDF (approved version {n})",
         # Curricula (Agent 3)
         "tab_curricula": "Curricula",
         "curricula_intro": "Curricula drafted by the Curriculum Agent. Review a version, then approve it or "
@@ -397,6 +511,115 @@ T = {
         "metric_applied": "تم التقدم",
         "metric_manual": "يحتاج إجراءً يدويًا",
         "done": "تم الحفظ.",
+        # Marketing (Agent 5)
+        "tab_marketing": "التسويق",
+        "mk_intro": "أنشئ حملات تسويقية لمقرر معتمد: استراتيجية بسيطة وعدة صيغ من تعليقات وسائل التواصل ونصوص الإعلانات ومنشورات "
+                    "لينكدإن والبريد ورسائل واتساب والعناوين والدعوات إلى اتخاذ إجراء. تنتظر كل حملة اعتمادك. لا يُنشر ولا "
+                    "يُرسل شيء: المحتوى المعتمد يمكن تنزيله فقط.",
+        "mk_status": {"draft": "مسودة", "pending_review": "بانتظار المراجعة", "approved": "معتمدة"},
+        "mk_new": "حملة جديدة",
+        "mk_none_approved": "لا يوجد مقرر معتمد بعد. اعتمد منهجًا في تبويب المناهج أولًا.",
+        "mk_list_error": "تعذر عرض المقررات المعتمدة: {error}",
+        "mk_showing": "عرض {shown} من {total} مقررًا معتمدًا.",
+        "mk_course": "المقرر المعتمد",
+        "mk_audience": "الجمهور المستهدف (أكّده أو غيّره)",
+        "mk_audience_from_course": "مأخوذ من المقرر المعتمد. غيّره فقط إذا كانت الحملة موجهة لجمهور آخر.",
+        "mk_audience_missing": "لا يذكر المقرر المعتمد جمهوره المستهدف. صف لمن هذه الحملة.",
+        "mk_tone": "النبرة",
+        "mk_channels": "المحتوى المطلوب",
+        "mk_variations": "عدد الصيغ لكل نوع",
+        "mk_goal": "هدف الحملة (اختياري)",
+        "mk_notes": "معلومات إضافية تقدمها (اختياري، مثل موعد البدء)",
+        "mk_language_note": "اللغة: {language}. تُكتب الحملة بلغة مقررها ولا تُترجم.",
+        "mk_generate": "إنشاء الحملة",
+        "mk_generating": "جارٍ كتابة الحملة. قد يستغرق ذلك عدة دقائق على نموذج محلي صغير (جزء بعد جزء). لا يُحفظ شيء إلا بعد "
+                         "أن يجتاز كل جزء الفحوص.",
+        "mk_progress": "جارٍ كتابة {label}: الخطوة {done} من {total}",
+        "mk_progress_saving": "اكتملت كتابة الأجزاء. جارٍ الفحص والحفظ…",
+        "mk_need_channel": "اختر نوعًا واحدًا على الأقل من المحتوى.",
+        "mk_filter": "تصفية حسب الحالة",
+        "mk_all": "الكل",
+        "mk_none": "لا توجد حملات بعد.",
+        "mk_page": "الصفحة",
+        "mk_version": "النسخة",
+        "mk_current": "الحالية",
+        "mk_approved_tag": "النسخة {n} معتمدة",
+        "mk_audience_label": "الجمهور المستهدف",
+        "mk_tone_label": "النبرة",
+        "mk_course_changed": "للمقرر نسخة معتمدة أحدث من النسخة التي كُتبت منها هذه الحملة.",
+        "mk_problems": "مشكلات يجب إصلاحها قبل اعتماد هذه النسخة",
+        "mk_strategy": "استراتيجية الحملة",
+        "mk_objective": "الهدف",
+        "mk_main_message": "الرسالة الرئيسية",
+        "mk_rec_channels": "القنوات الموصى بها",
+        "mk_sequence": "تسلسل المحتوى المقترح (الخطوة {n})",
+        "mk_cta": "الدعوة إلى اتخاذ إجراء",
+        "mk_variation": "الصيغة {n}",
+        "mk_edit_approved": "النسخة {n} معتمدة. يؤدي حفظ تعديل إلى نسخة جديدة تحتاج اعتمادًا؛ وتبقى النسخة المعتمدة كما هي.",
+        "mk_save_edit": "حفظ التعديلات كنسخة جديدة",
+        "mk_unchanged": "لا توجد تغييرات للحفظ.",
+        "mk_edited_msg": "تم الحفظ كنسخة جديدة.",
+        "mk_edit_draft": "تم الحفظ، لكنها لا تجتاز الفحوص فهي مسودة ولا يمكن اعتمادها قبل إصلاح المشكلات.",
+        "mk_hashtags": "الوسوم (تفصل بينها مسافات)",
+        "mk_review_notes": "ملاحظات المراجعة (اختياري)",
+        "mk_approve": "اعتماد هذه النسخة",
+        "mk_approved_msg": "تم الاعتماد. يمكن الآن تنزيلها. لم يُنشر ولم يُرسل شيء.",
+        "mk_not_reviewable": "لا يمكن اعتماد إلا النسخة الحالية وهي بانتظار المراجعة.",
+        "mk_download_note": "التنزيلات هي النسخة المعتمدة {n} فقط.",
+        "mk_download_md": "تنزيل النسخة المعتمدة (Markdown)",
+        "mk_download_json": "تنزيل النسخة المعتمدة (JSON)",
+        "mk_nothing_to_download": "لا شيء للتنزيل بعد: المسودات والمحتوى بانتظار المراجعة غير جاهز للاستخدام. اعتمد نسخة أولًا.",
+        "mk_regenerate": "كتابة نسخة جديدة بالاختيارات نفسها",
+        "mk_audit": "سجل المراجعة",
+        # Documents (Agent 4)
+        "tab_documents": "الوثائق",
+        "doc_intro": "أنشئ وثائق تدريبية من منهج معتمد، وراجع النص الذي كتبه الذكاء الاصطناعي وعدّله، ثم اعتمد النسخة "
+                     "النهائية ونزّل ملف PDF. لا يمكن تعديل النص المنقول من المنهج هنا: عدّل المنهج وأعد اعتماده.",
+        "doc_status": {"draft": "مسودة", "pending_review": "بانتظار المراجعة", "approved": "معتمدة"},
+        "doc_new": "وثيقة جديدة",
+        "doc_none_approved": "لا يوجد منهج معتمد بعد. اعتمد منهجًا في تبويب المناهج أولًا.",
+        "doc_curriculum": "المنهج المعتمد",
+        "doc_type": "نوع الوثيقة",
+        "doc_format": "نمط التدريب (اختياري)",
+        "doc_org": "الجهة أو العميل (اختياري)",
+        "doc_schedule": "ملاحظات الجدول (اختياري)",
+        "doc_generate": "إنشاء الوثيقة",
+        "doc_none": "لا توجد وثائق بعد.",
+        "doc_filter": "عرض",
+        "doc_all": "الكل",
+        "doc_version": "النسخة",
+        "doc_current": "الحالية",
+        "doc_curriculum_changed": "عُدّل المنهج بعد إنشاء هذه الوثيقة. ما زالت تعتمد على النسخة المعتمدة المذكورة فيها.",
+        "doc_missing": "غير محدد في المنهج (موضّح في الوثيقة)",
+        "doc_problems": "مشكلات التحقق",
+        "doc_edit_hint": "نص قابل للتعديل (كتبه الذكاء الاصطناعي أو مسؤول)",
+        "doc_save_edit": "حفظ التعديلات كنسخة جديدة",
+        "doc_edited_msg": "حُفظت كنسخة جديدة. تحتاج إلى مراجعة من جديد.",
+        "doc_notes": "ملاحظات المراجعة (اختياري)",
+        "doc_approve": "اعتماد هذه النسخة",
+        "doc_approved_msg": "تم اعتماد الوثيقة.",
+        "doc_regenerate": "إعادة الإنشاء (نسخة جديدة)",
+        "doc_not_reviewable": "لا يمكن اعتماد إلا النسخة الحالية وهي بانتظار المراجعة.",
+        "doc_pdf_download": "تنزيل PDF",
+        "doc_pdf_create": "إنشاء PDF",
+        "doc_audit": "سجل المراجعة",
+        "doc_unchanged": "لا توجد تعديلات للحفظ.",
+        "doc_approved_tag": "المعتمدة: النسخة {n}",
+        "doc_edit_approved": "هذه النسخة معتمدة. حفظ تعديلاتك ينشئ نسخة جديدة للمراجعة، وتبقى النسخة {n} هي "
+                             "المعتمدة إلى أن تُعتمد النسخة الجديدة.",
+        "doc_approved_pdf": "تنزيل ملف PDF المعتمد",
+        "doc_review_pdf": "تنزيل PDF (نسخة المراجعة)",
+        "doc_page": "الصفحة",
+        "doc_showing": "عرض {shown} من {total} منهجًا معتمدًا (الأحدث أولًا).",
+        "doc_list_error": "تعذر عرض المناهج المعتمدة: {error}",
+        "doc_generating": "جارٍ إنشاء الوثيقة. قد يستغرق ذلك عدة دقائق (يكتب النموذج وحدة تلو الأخرى). لا يُحفظ شيء "
+                          "إلا بعد أن يجتاز كل جزء الفحوص.",
+        "doc_progress": "جارٍ كتابة {label}: الخطوة {done} من {total}",
+        "doc_progress_saving": "اكتملت كتابة الأجزاء. جارٍ الفحص والحفظ وإنشاء ملف PDF…",
+        "doc_language_note": "اللغة: {language}. تُكتب الوثيقة بلغة منهجها ولا تُترجم.",
+        "doc_cpdf_note": "ملف PDF للمنهج هو ملف وكيل المناهج للنسخة المعتمدة. وهو ليس وثيقة مُنشأة: لا يُنشأ شيء ولا "
+                         "تجري مراجعة هنا.",
+        "doc_cpdf_download": "تنزيل ملف PDF للمنهج (النسخة المعتمدة {n})",
         # Curricula (Agent 3)
         "tab_curricula": "المناهج",
         "curricula_intro": "مناهج أعدّها وكيل المناهج. راجع النسخة ثم اعتمدها أو اطلب تعديلات. لا يستطيع "
@@ -458,6 +681,8 @@ T = {
 AGENT_LABELS = {
     "rfp_research": {"en": "RFP Research", "ar": "وكيل المناقصات"},
     "curriculum_research": {"en": "Curriculum Research", "ar": "وكيل المناهج"},
+    "document_generation": {"en": "Document Generation", "ar": "وكيل الوثائق"},
+    "marketing": {"en": "Marketing", "ar": "وكيل التسويق"},
     "orchestrator": {"en": "Orchestrator", "ar": "المنسّق"},
 }
 
@@ -629,13 +854,14 @@ def passcode_dialog() -> None:
             submitted = st.form_submit_button(t("unlock"), type="primary",
                                               width="stretch")
         if submitted:
-            token = admin.login(code)
+            client_id = st.session_state.setdefault("admin_client_id", uuid.uuid4().hex)
+            token = admin.login(code, client_id)
             if token:
                 st.session_state.admin_token = token
                 st.session_state.passcode_open = False
                 st.session_state.view = "admin"
                 st.rerun()
-            elif admin.is_locked():
+            elif admin.is_locked(client_id):
                 st.error(t("locked"))
             else:
                 st.error(t("wrong_passcode"))
@@ -1243,7 +1469,9 @@ def curriculum_panel(row: dict) -> None:
     labels = t("cur_status")
     versions = [v["version"] for v in admin_call("get_curriculum", curriculum_id)["versions"]]
     version = st.selectbox(
-        t("cur_version"), list(reversed(versions)), key=f"cur_version_{curriculum_id}",
+        # The key includes the current version: after a revision the selector shows the new version
+        # instead of staying on the one chosen before.
+        t("cur_version"), list(reversed(versions)), key=f"cur_version_{curriculum_id}_{row['current_version']}",
         format_func=lambda v: f"v{v}" + (f" ({t('cur_current')})" if v == row["current_version"] else ""))
     detail = admin_call("get_curriculum", curriculum_id, version)
     record = detail["curriculum"]
@@ -1336,6 +1564,412 @@ def curriculum_panel(row: dict) -> None:
             st.dataframe(list(reversed(detail["audit"])), hide_index=True, width="stretch")
 
 
+DOCUMENTS_PER_PAGE = 25
+
+
+def documents_tab() -> None:
+    """Agent 4's documents: generate from an approved curriculum, edit, approve, download."""
+    st.caption(t("doc_intro"))
+    labels = t("doc_status")
+    counts = admin_call("document_counts")
+    for column, (status, label) in zip(st.columns(len(labels)), labels.items()):
+        column.metric(label, counts.get(status, 0))
+
+    approved, total_approved, list_error = [], 0, None
+    try:
+        page_of_curricula = admin_call("list_approved_curricula")
+        approved, total_approved = page_of_curricula["curricula"], page_of_curricula["total"]
+    except ValueError as exc:   # a failure is shown as one, never as "none approved"
+        list_error = str(exc)
+    with st.expander(t("doc_new"), expanded=not sum(counts.values())):
+        if list_error:
+            st.error(t("doc_list_error").format(error=plain(list_error)))
+        elif not approved:
+            st.info(t("doc_none_approved"))
+        else:
+            if total_approved > len(approved):
+                st.caption(t("doc_showing").format(shown=len(approved), total=total_approved))
+            # The two choices are outside the form so that choosing "Curriculum PDF" shows its download at once.
+            curriculum = st.selectbox(
+                t("doc_curriculum"), approved, key="doc_curriculum",
+                format_func=lambda c: f"{plain(c['title'])} · {c['curriculum_id']} · v{c['approved_version']} · "
+                                      f"{(c.get('language') or '').upper()}")
+            doc_type = st.selectbox(t("doc_type"), [*TEMPLATES, CURRICULUM_PDF], key="doc_type",
+                                    format_func=lambda d: type_label(d, lang()))
+            st.caption(t("doc_language_note").format(
+                language={"ar": "العربية" if lang() == "ar" else "Arabic", "en": "الإنجليزية" if lang() == "ar" else "English"}
+                .get(curriculum.get("language"), curriculum.get("language") or "")))
+            if doc_type == CURRICULUM_PDF:
+                curriculum_pdf_download(curriculum)
+            else:
+                with st.form("doc_form", border=False):
+                    extra = {"training_format": st.text_input(t("doc_format"), key="doc_extra_format",
+                                                              max_chars=EXTRA_FIELDS["training_format"]),
+                             "organization": st.text_input(t("doc_org"), key="doc_extra_org",
+                                                           max_chars=EXTRA_FIELDS["organization"]),
+                             "schedule_notes": st.text_input(t("doc_schedule"), key="doc_extra_schedule",
+                                                             max_chars=EXTRA_FIELDS["schedule_notes"])}
+                    submitted = st.form_submit_button(t("doc_generate"), type="primary", icon=":material/description:")
+                if submitted:
+                    _generate_document(curriculum["curriculum_id"], doc_type, {k: v for k, v in extra.items() if v})
+
+    options = [None, *labels]
+    status = st.selectbox(t("doc_filter"), options, key="doc_filter",
+                          format_func=lambda s: t("doc_all") if s is None else labels[s])
+    total = sum(counts.values()) if status is None else counts.get(status, 0)
+    pages = max(1, -(-total // DOCUMENTS_PER_PAGE))
+    page = 1
+    if pages > 1:
+        page = st.number_input(t("doc_page"), min_value=1, max_value=pages, value=1, step=1, key=f"doc_page_{status}")
+    rows = admin_call("list_documents", status, limit=DOCUMENTS_PER_PAGE, offset=(int(page) - 1) * DOCUMENTS_PER_PAGE)
+    if not rows:
+        st.info(t("doc_none"))
+        return
+    for row in rows:
+        approved_tag = (" · " + t("doc_approved_tag").format(n=row["approved_version"])
+                        if row.get("approved_version") and row["status"] != "approved" else "")
+        title = (f"{plain(row['title'])} · v{row['current_version']} · {row['curriculum_id']} · "
+                 f"{labels.get(row['status'], row['status'])}{approved_tag}")
+        with st.expander(title):
+            document_panel(row)
+
+
+def curriculum_pdf_download(curriculum: dict) -> None:
+    """The "Curriculum PDF" choice: Agent 3's own PDF of the approved version. Read-only; nothing is generated or stored."""
+    st.info(t("doc_cpdf_note"))
+    try:
+        pdf = admin_call("approved_curriculum_pdf", curriculum["curriculum_id"])
+    except ValueError as exc:
+        st.error(plain(str(exc)))
+        return
+    st.download_button(t("doc_cpdf_download").format(n=pdf["version"]), pdf["data"], file_name=pdf["filename"],
+                       mime="application/pdf", icon=":material/download:", key=f"cpdf_{curriculum['curriculum_id']}_{pdf['version']}")
+
+
+def _generate_document(curriculum_id: str, doc_type: str, extra: dict, document_id: str | None = None) -> None:
+    """Ask the Document agent (document_id: a new version of that document) and show its answer."""
+    # Writing can take several minutes (one model call per module): say so, and show each step as it happens.
+    progress_box = st.empty()
+
+    def progress(done: int, total: int, label: str) -> None:
+        progress_box.info(t("doc_progress").format(label=plain(label), done=done + 1, total=total) if label
+                          else t("doc_progress_saving"))
+
+    with st.spinner(t("doc_generating")):
+        response = admin_call("generate_document", curriculum_id, doc_type, None, extra, document_id,
+                              context={"conversation_id": st.session_state.admin_conversation_id,
+                                       "preferred_language": lang(), "progress": progress})
+    progress_box.empty()
+    results = response.get("result") or []
+    if response.get("status") == "success" and results:
+        # Redraw so the counts, the list and the version selector show the new version; the agent's
+        # message is kept in the flash banner.
+        st.session_state.flash = "  \n".join(plain((r.get("result") or {}).get("message")) for r in results
+                                             if isinstance(r.get("result"), dict))
+        st.rerun()
+    for result in results:
+        render_agent_result(result)
+    if not results and response.get("error_message"):
+        st.error(response["error_message"])
+
+
+def _render_block(block: dict) -> None:
+    kind = block.get("type")
+    if kind == "paragraph":
+        st.markdown(plain(block.get("text")))
+    elif kind == "bullets":
+        st.markdown("\n".join(f"- {plain(i)}" for i in block.get("items") or []))
+    elif kind == "heading":
+        st.markdown(f"**{plain(block.get('text'))}**")
+    elif kind == "table":
+        st.dataframe([dict(zip(block.get("header") or [], row)) for row in block.get("rows") or []],
+                     hide_index=True, width="stretch")
+
+
+def document_panel(row: dict) -> None:
+    document_id = row["document_id"]
+    labels = t("doc_status")
+    versions = [v["version"] for v in admin_call("get_document", document_id)["versions"]]
+    version = st.selectbox(
+        t("doc_version"), list(reversed(versions)), key=f"doc_version_{document_id}_{row['current_version']}",
+        format_func=lambda v: f"v{v}" + (f" ({t('doc_current')})" if v == row["current_version"] else ""))
+    detail = admin_call("get_document", document_id, version)
+    record = detail["document"]
+    content = record["content"]
+    version_status = record["version_status"]
+    is_current = version == row["current_version"]
+
+    st.markdown(badge(f"cur-{version_status}", labels.get(version_status, version_status))
+                + f" `{document_id}` · `{content['curriculum_id']}` v{content['curriculum_version']}",
+                unsafe_allow_html=True)
+    if detail["curriculum_changed"]:
+        st.info(t("doc_curriculum_changed"))
+    if content.get("missing"):
+        st.warning(t("doc_missing") + ": " + ("، " if lang() == "ar" else ", ").join(
+            sorted({field_label(m["field"], lang()) for m in content["missing"]})))
+    errors = (record.get("validation") or {}).get("errors") or []
+    if errors:
+        st.warning(t("doc_problems") + "\n" + "\n".join(f"- {plain(e.get('message'))}" for e in errors))
+
+    edits_allowed = is_current   # an edit of an approved version is saved as a new version
+    if edits_allowed and version_status == "approved":
+        st.info(t("doc_edit_approved").format(n=version))
+    container = st.form(f"doc_edit_{document_id}", border=True) if edits_allowed else st.container()
+    pending_edits: list[tuple[dict, str]] = []
+    with container:
+        for section in content["sections"]:
+            st.markdown(f"**{plain(section['heading'])}**")
+            for index, block in enumerate(section["blocks"]):
+                free = block.get("source") in ("generated", "admin") and block.get("type") in ("paragraph", "bullets")
+                if free and edits_allowed:
+                    current = block["text"] if block["type"] == "paragraph" else "\n".join(block.get("items") or [])
+                    value = st.text_area(t("doc_edit_hint"), current,
+                                         key=f"doc_{document_id}_{version}_{section['key']}_{index}",
+                                         label_visibility="collapsed")
+                    if value != current:
+                        pending_edits.append(({"section": section["key"], "block": index}, value))
+                else:
+                    _render_block(block)
+        if edits_allowed and st.form_submit_button(t("doc_save_edit"), icon=":material/save:",
+                                                   key=f"doc_save_{document_id}"):
+            if not pending_edits:
+                st.info(t("doc_unchanged"))
+            elif admin_action("edit_document", document_id,
+                              [{**target, "value": value} for target, value in pending_edits]):
+                st.session_state.flash = t("doc_edited_msg")
+                st.rerun()
+
+    if record["filename"]:
+        pdf = admin_call("document_pdf", document_id, version)
+        st.download_button(t("doc_approved_pdf") if pdf["approved"] else t("doc_review_pdf"), pdf["data"],
+                           file_name=pdf["filename"], mime="application/pdf", icon=":material/download:",
+                           key=f"doc_pdf_{document_id}_{version}")
+    elif st.button(t("doc_pdf_create"), icon=":material/picture_as_pdf:", key=f"doc_pdf_make_{document_id}_{version}"):
+        if admin_action("document_pdf", document_id, version):
+            st.rerun()
+
+    if not (is_current and version_status == "pending_review"):
+        st.caption(t("doc_not_reviewable"))
+    else:
+        with st.form(f"doc_review_{document_id}", border=True):
+            notes = st.text_area(t("doc_notes"), key=f"doc_notes_{document_id}")
+            if st.form_submit_button(t("doc_approve"), type="primary", icon=":material/check:",
+                                     key=f"doc_approve_{document_id}"):
+                if admin_action("approve_document", document_id, version, notes or None):
+                    st.session_state.flash = t("doc_approved_msg")
+                    st.rerun()
+    if is_current and st.button(t("doc_regenerate"), icon=":material/refresh:", key=f"doc_regen_{document_id}"):
+        _generate_document(content["curriculum_id"], content["document_type"], content.get("extra") or {}, document_id)
+
+    if detail["audit"]:
+        with st.expander(t("doc_audit")):
+            st.dataframe(list(reversed(detail["audit"])), hide_index=True, width="stretch")
+
+
+CAMPAIGNS_PER_PAGE = 25
+
+
+def marketing_tab() -> None:
+    """Agent 5's campaigns: write from an approved course, review, edit, approve, download. Nothing is ever sent."""
+    st.caption(t("mk_intro"))
+    labels = t("mk_status")
+    counts = admin_call("campaign_counts")
+    for column, (status, label) in zip(st.columns(len(labels)), labels.items()):
+        column.metric(label, counts.get(status, 0))
+
+    approved, total_approved, list_error = [], 0, None
+    try:
+        page_of_courses = admin_call("list_approved_courses")
+        approved, total_approved = page_of_courses["courses"], page_of_courses["total"]
+    except ValueError as exc:   # a failure is shown as one, never as "none approved"
+        list_error = str(exc)
+    with st.expander(t("mk_new"), expanded=not sum(counts.values())):
+        if list_error:
+            st.error(t("mk_list_error").format(error=plain(list_error)))
+        elif not approved:
+            st.info(t("mk_none_approved"))
+        else:
+            if total_approved > len(approved):
+                st.caption(t("mk_showing").format(shown=len(approved), total=total_approved))
+            course = st.selectbox(
+                t("mk_course"), approved, key="mk_course",
+                format_func=lambda c: f"{plain(c['title'])} · {c['curriculum_id']} · v{c['approved_version']} · "
+                                      f"{(c.get('language') or '').upper()}")
+            st.caption(t("mk_language_note").format(
+                language={"ar": "العربية" if lang() == "ar" else "Arabic", "en": "الإنجليزية" if lang() == "ar" else "English"}
+                .get(course.get("language"), course.get("language") or "")))
+            from_course = (course.get("target_audience") or "").strip()
+            with st.form("mk_form", border=False):
+                audience = st.text_input(t("mk_audience"), value=from_course, key=f"mk_audience_{course['curriculum_id']}",
+                                         max_chars=300, help=t("mk_audience_from_course") if from_course else t("mk_audience_missing"))
+                if not from_course:
+                    st.caption(t("mk_audience_missing"))
+                first, second, third = st.columns(3)
+                tone = first.selectbox(t("mk_tone"), marketing_schemas.TONES, key="mk_tone",
+                                       format_func=lambda x: marketing_schemas.TONE_LABELS[x][lang()])
+                variations = second.selectbox(t("mk_variations"), [1, 2, 3], index=1, key="mk_variations")
+                channels = third.multiselect(t("mk_channels"), marketing_schemas.CHANNELS, default=list(marketing_schemas.CHANNELS),
+                                             key="mk_channels", format_func=lambda x: marketing_schemas.CHANNEL_LABELS[x][lang()])
+                goal = st.text_input(t("mk_goal"), key="mk_goal", max_chars=300)
+                notes = st.text_input(t("mk_notes"), key="mk_notes", max_chars=300)
+                submitted = st.form_submit_button(t("mk_generate"), type="primary", icon=":material/campaign:")
+            if submitted:
+                if not channels:
+                    st.warning(t("mk_need_channel"))
+                else:
+                    _generate_campaign({"curriculum_id": course["curriculum_id"], "audience": audience.strip() or None, "tone": tone,
+                                        "variations": variations, "channels": list(channels), "goal": goal or None,
+                                        "notes": notes or None})
+
+    options = [None, *labels]
+    status = st.selectbox(t("mk_filter"), options, key="mk_filter", format_func=lambda s: t("mk_all") if s is None else labels[s])
+    total = sum(counts.values()) if status is None else counts.get(status, 0)
+    pages = max(1, -(-total // CAMPAIGNS_PER_PAGE))
+    page = 1
+    if pages > 1:
+        page = st.number_input(t("mk_page"), min_value=1, max_value=pages, value=1, step=1, key=f"mk_page_{status}")
+    rows = admin_call("list_campaigns", status, limit=CAMPAIGNS_PER_PAGE, offset=(int(page) - 1) * CAMPAIGNS_PER_PAGE)
+    if not rows:
+        st.info(t("mk_none"))
+        return
+    for row in rows:
+        approved_tag = (" · " + t("mk_approved_tag").format(n=row["approved_version"])
+                        if row.get("approved_version") and row["status"] != "approved" else "")
+        title = (f"{plain(row['title'])} · v{row['current_version']} · {row['curriculum_id']} · "
+                 f"{labels.get(row['status'], row['status'])}{approved_tag}")
+        with st.expander(title):
+            campaign_panel(row)
+
+
+def _generate_campaign(request: dict, campaign_id: str | None = None) -> None:
+    """Ask the Marketing agent (campaign_id: a new version of that campaign) and show its answer."""
+    progress_box = st.empty()
+
+    def progress(done: int, total: int, label: str) -> None:
+        progress_box.info(t("mk_progress").format(label=plain(label), done=done + 1, total=total) if label
+                          else t("mk_progress_saving"))
+
+    with st.spinner(t("mk_generating")):
+        response = admin_call("generate_campaign", {**request, "campaign_id": campaign_id},
+                              context={"conversation_id": st.session_state.admin_conversation_id,
+                                       "preferred_language": lang(), "progress": progress})
+    progress_box.empty()
+    results = response.get("result") or []
+    if response.get("status") == "success" and results and all((r.get("result") or {}).get("kind") == "campaign" for r in results):
+        st.session_state.flash = "  \n".join(plain((r.get("result") or {}).get("message")) for r in results)
+        st.rerun()
+    for result in results:   # a question (audience? course?) or an error that says what failed and that nothing was saved
+        render_agent_result(result)
+    if not results and response.get("error_message"):
+        st.error(response["error_message"])
+
+
+def campaign_panel(row: dict) -> None:
+    campaign_id = row["campaign_id"]
+    labels = t("mk_status")
+    versions = [v["version"] for v in admin_call("get_campaign", campaign_id)["versions"]]
+    version = st.selectbox(
+        t("mk_version"), list(reversed(versions)), key=f"mk_version_{campaign_id}_{row['current_version']}",
+        format_func=lambda v: f"v{v}" + (f" ({t('mk_current')})" if v == row["current_version"] else ""))
+    detail = admin_call("get_campaign", campaign_id, version)
+    record = detail["campaign"]
+    content = record["content"]
+    version_status = record["version_status"]
+    is_current = version == row["current_version"]
+    language = content["language"]
+
+    st.markdown(badge(f"cur-{version_status}", labels.get(version_status, version_status))
+                + f" `{campaign_id}` · `{content['curriculum_id']}` v{content['curriculum_version']}", unsafe_allow_html=True)
+    st.markdown(f"**{t('mk_audience_label')}:** {plain(content['audience']['text'])}  \n"
+                f"**{t('mk_tone_label')}:** {marketing_schemas.TONE_LABELS[content['tone']][lang()]}")
+    if detail["course_changed"]:
+        st.info(t("mk_course_changed"))
+    errors = (record.get("validation") or {}).get("errors") or []
+    if errors:
+        st.warning(t("mk_problems") + "\n" + "\n".join(f"- {plain(e.get('message'))}" for e in errors))
+
+    edits_allowed = is_current   # an edit of an approved version is saved as a new version
+    if edits_allowed and version_status == "approved":
+        st.info(t("mk_edit_approved").format(n=version))
+    container = st.form(f"mk_edit_{campaign_id}", border=True) if edits_allowed else st.container()
+    pending_edits: list[tuple[list, str]] = []
+
+    def field(label: str, path: list, current: str, multiline: bool = True) -> None:
+        key = f"mk_{campaign_id}_{version}_" + "_".join(str(p) for p in path)
+        if edits_allowed:
+            value = (st.text_area if multiline else st.text_input)(label, current, key=key)
+            if value != current:
+                pending_edits.append((path, value))
+        else:
+            st.markdown(f"**{label}**  \n{plain(current)}")
+
+    with container:
+        strategy = content["strategy"]
+        st.markdown(f"#### {t('mk_strategy')}")
+        field(t("mk_objective"), ["strategy", "objective"], strategy["objective"])
+        field(t("mk_main_message"), ["strategy", "main_message"], strategy["main_message"])
+        st.markdown(f"**{t('mk_rec_channels')}:** " + ", ".join(marketing_schemas.CHANNEL_LABELS[c][lang()] for c in strategy["recommended_channels"]))
+        for index, step in enumerate(strategy["content_sequence"]):
+            field(t("mk_sequence").format(n=index + 1), ["strategy", "content_sequence", index], step)
+        field(t("mk_cta"), ["strategy", "call_to_action"], strategy["call_to_action"], multiline=False)
+        for channel, body in content["channels"].items():
+            st.markdown(f"#### {marketing_schemas.CHANNEL_LABELS[channel][lang()]}")
+            columns = st.columns(len(body["variations"]))     # the variations side by side, to compare
+            for number, (column, variation) in enumerate(zip(columns, body["variations"])):
+                with column:
+                    st.markdown(f"**{t('mk_variation').format(n=number + 1)}**")
+                    for name in marketing_schemas.LIMITS[channel]:
+                        field(marketing_composer_label(name), ["channels", channel, "variations", number, name], variation[name])
+                    if channel == "social_captions":
+                        field(t("mk_hashtags"), ["channels", channel, "variations", number, "hashtags"],
+                              " ".join(variation.get("hashtags") or []), multiline=False)
+        if edits_allowed and st.form_submit_button(t("mk_save_edit"), icon=":material/save:", key=f"mk_save_{campaign_id}"):
+            if not pending_edits:
+                st.info(t("mk_unchanged"))
+            else:
+                try:
+                    saved = admin_call("edit_campaign", campaign_id, [{"path": path, "value": value} for path, value in pending_edits])
+                except ValueError as exc:
+                    st.error(str(exc).strip("'\""))
+                else:
+                    st.session_state.flash = t("mk_edited_msg") if saved["review_status"] == "pending_review" else t("mk_edit_draft")
+                    st.rerun()
+
+    if record["approved_version"]:
+        st.markdown(f"##### {t('mk_download_note').format(n=record['approved_version'])}")
+        for fmt, label_key in (("markdown", "mk_download_md"), ("json", "mk_download_json")):
+            export = admin_call("campaign_export", campaign_id, fmt)
+            st.download_button(t(label_key), export["data"], file_name=export["filename"], mime=export["mime"],
+                               icon=":material/download:", key=f"mk_dl_{fmt}_{campaign_id}_{export['version']}")
+    else:
+        st.caption(t("mk_nothing_to_download"))
+
+    if not (is_current and version_status == "pending_review"):
+        st.caption(t("mk_not_reviewable"))
+    else:
+        with st.form(f"mk_review_{campaign_id}", border=True):
+            notes = st.text_area(t("mk_review_notes"), key=f"mk_notes_{campaign_id}")
+            if st.form_submit_button(t("mk_approve"), type="primary", icon=":material/check:", key=f"mk_approve_{campaign_id}"):
+                if admin_action("approve_campaign", campaign_id, version, notes or None):
+                    st.session_state.flash = t("mk_approved_msg")
+                    st.rerun()
+    if is_current and st.button(t("mk_regenerate"), icon=":material/refresh:", key=f"mk_regen_{campaign_id}"):
+        _generate_campaign({"curriculum_id": content["curriculum_id"], "audience": content["audience"]["text"], "tone": content["tone"],
+                            "variations": content["variations"], "channels": list(content["channels"]), "goal": content.get("goal"),
+                            "notes": content.get("notes")}, campaign_id)
+
+    if detail["audit"]:
+        with st.expander(t("mk_audit")):
+            st.dataframe(list(reversed(detail["audit"])), hide_index=True, width="stretch")
+
+
+def marketing_composer_label(name: str) -> str:
+    """The label of one text field of a variation (subject, body, headline...), in the interface language."""
+    from agents.marketing.composer import STRINGS
+
+    return STRINGS[lang()].get(name, name.replace("_", " "))
+
+
 def audit_tab() -> None:
     trail = admin_call("audit_trail")
     if not trail:
@@ -1374,9 +2008,9 @@ def admin_view() -> None:
     metrics[4].metric(t("metric_applied"), counts["applied"])
     metrics[5].metric(t("rejected"), counts["rejected"])
 
-    review, search, agents, dashboard, curricula, profile, audit = st.tabs([
+    review, search, agents, dashboard, curricula, documents, marketing, profile, audit = st.tabs([
         t("tab_review"), t("tab_search"), t("tab_agents"), t("tab_dashboard"), t("tab_curricula"),
-        t("tab_profile"), t("tab_audit"),
+        t("tab_documents"), t("tab_marketing"), t("tab_profile"), t("tab_audit"),
     ])
     with review:
         review_tab(counts)
@@ -1388,6 +2022,10 @@ def admin_view() -> None:
         dashboard_tab()
     with curricula:
         curricula_tab()
+    with documents:
+        documents_tab()
+    with marketing:
+        marketing_tab()
     with profile:
         profile_tab()
     with audit:

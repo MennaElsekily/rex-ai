@@ -6,6 +6,8 @@ from agents.curriculum_research.registration import (
     register_curriculum_research,
 )
 from agents.conversation_store import ConversationStore
+from agents.document_generation.registration import register_document_generation
+from agents.marketing.registration import register_marketing
 from agents.rex_assistant import RexAssistantAgent
 from agents.rfp_research import RFPResearchAgent
 from agents.rfp_research.opportunity_store import OpportunityStore
@@ -117,9 +119,19 @@ def create_admin_orchestrator(
     )
     orchestrator.register_agent(rfp_agent.AGENT_NAME, rfp_agent.process_request)
 
+    # Agent 4 builds documents from the curricula Agent 3 saved and an
+    # administrator approved (read through its own MCP server).
+    document_agent = register_document_generation(orchestrator, store)
+
+    # Agent 5 writes marketing campaigns from approved courses only; every campaign waits for admin approval and
+    # nothing is ever published or sent.
+    marketing_agent = register_marketing(orchestrator, store)
+
     orchestrator.conversation_store = store
     orchestrator.curriculum_research_agent = curriculum_agent
     orchestrator.rfp_research_agent = rfp_agent
+    orchestrator.document_generation_agent = document_agent
+    orchestrator.marketing_agent = marketing_agent
 
     return orchestrator
 

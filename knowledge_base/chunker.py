@@ -30,7 +30,7 @@ import re
 from typing import Any
 
 from knowledge_base.embedding_service import embed_texts
-from knowledge_base.metadata_extractor import extract_explicit_fields
+from knowledge_base.metadata_extractor import extract_explicit_fields, identity_field, is_field_line
 
 DEFAULT_MAX_CHARS = 1000
 DEFAULT_MIN_CHARS = 250
@@ -154,6 +154,59 @@ def _split_sections(text: str) -> list[dict[str, Any]]:
 
     save_section()
     return [s for s in sections if s["text"] or s["heading"]]
+
+
+def _split_records(text: str) -> tuple[str, list[str]]:
+    """
+    A section that lists several records under one heading ("Course ID:
+    AA-100 ... Course ID: BB-200"): (preamble, [record text, ...]), so each
+    record keeps its own fields instead of all taking the first one's.
+    A record starts at the "Key: value" lines just above its identity
+    line ("Course Name: ..." written before "Course ID: ..."). A section
+    with at most one value per identity field is returned whole: (text, []).
+    """
+    lines = text.splitlines()
+    values: dict[str, set] = {}
+    for line in lines:
+        found = identity_field(line)
+        if found:
+            values.setdefault(found[0], set()).add(found[1])
+    repeated = {key for key, seen in values.items() if len(seen) > 1}
+    if not repeated:
+        return text, []
+
+    found_at = [i for i, line in enumerate(lines) if (identity_field(line) or ("",))[0] in repeated]
+
+    # Records written "Course Name: ..." above "Course ID: ...": as many
+    # field lines as lead the first record also lead every other one.
+    lead = 0
+    while found_at[0] - lead > 0 and lines[found_at[0] - lead - 1].strip() \
+            and is_field_line(lines[found_at[0] - lead - 1]):
+        lead += 1
+
+    starts = []
+    for number, index in enumerate(found_at):
+        floor = found_at[number - 1] + 1 if number else 0
+        start = index
+        while start > max(floor, index - lead) and lines[start - 1].strip() and is_field_line(lines[start - 1]):
+            start -= 1
+        starts.append(start)
+
+    preamble = "\n".join(lines[:starts[0]]).strip()
+    records = [
+        "\n".join(lines[start:end]).strip()
+        for start, end in zip(starts, [*starts[1:], len(lines)])
+    ]
+    return preamble, [record for record in records if record]
+
+
+def _record_identity(text: str) -> Any:
+    """The value of the first identity field line ("Course ID: AA-100" -> "AA-100")."""
+    for line in text.splitlines():
+        found = identity_field(line)
+        if found:
+            return found[1]
+    return None
 
 
 def _split_paragraphs(text: str) -> list[str]:
@@ -422,6 +475,10 @@ def _document_units(document: dict[str, Any]) -> list[dict[str, Any]]:
             continue
 
         for section in _split_sections(page["text"]):
+            # Several records listed under one heading become one unit
+            # each; the heading keeps only the fields of the text before them.
+            preamble, records = _split_records(section["text"])
+
             if section["heading"]:
                 level = section["level"]
                 if level is None:
@@ -438,27 +495,41 @@ def _document_units(document: dict[str, Any]) -> list[dict[str, Any]]:
                 stack.append({
                     "title": _heading_text(section["heading"]),
                     "level": level,
-                    "fields": extract_explicit_fields(section["text"]),
+                    "fields": extract_explicit_fields(preamble),
                 })
             elif stack:
-                stack[-1]["fields"].update(extract_explicit_fields(section["text"]))
-
-            if not section["text"]:
-                continue
+                stack[-1]["fields"].update(extract_explicit_fields(preamble))
 
             fields: dict[str, Any] = {}
             for entry in stack:
                 fields.update(entry["fields"])
+            path = [entry["title"] for entry in stack]
 
-            units.append({
-                "kind": "section",
-                "path": [entry["title"] for entry in stack],
-                "group": None,
-                "text": section["text"].strip(),
-                "fields": fields,
-                "record_id": None,
-                "page": page_number,
-            })
+            if preamble:
+                units.append({
+                    "kind": "section",
+                    "path": path,
+                    "group": None,
+                    "text": preamble.strip(),
+                    "fields": fields,
+                    "record_id": None,
+                    "page": page_number,
+                })
+
+            # Records are never packed together (like spreadsheet rows), so
+            # a chunk can never hold one record's text under another's fields.
+            for record in records:
+                own = extract_explicit_fields(record)
+                record_id = _record_identity(record)
+                units.append({
+                    "kind": "record",
+                    "path": path,
+                    "group": ("record", record_id, len(units)),
+                    "text": record,
+                    "fields": {**fields, **own},
+                    "record_id": None if record_id is None else str(record_id),
+                    "page": page_number,
+                })
 
     # Units are packed only within the same branch: the first heading
     # level where the document divides (a lone document title shared by
