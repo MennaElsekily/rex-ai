@@ -68,6 +68,27 @@ def get_llm(model: str):
     return ChatOllama(**options)
 
 
+def describe_model_error(exc: Exception, llm: Any = None) -> str:
+    """
+    A short, user-facing reason for a model failure. The usual causes are
+    named, because "ResponseError" alone does not tell an administrator that
+    the model is not installed or that Ollama is not running.
+    """
+    name = type(exc).__name__
+    model = getattr(llm, "model", None)
+    status = getattr(exc, "status_code", None)
+    text = " ".join(str(exc).split())
+    if status == 404 or "not found" in text.lower() and name == "ResponseError":
+        which = f"'{model}'" if model else "The configured model"
+        pull = f" Install it with: ollama pull {model}" if model else ""
+        return f"{name}: the model {which} is not installed in Ollama.{pull}"
+    if "connect" in name.lower() or "connect" in text.lower() and "refused" in text.lower():
+        return f"{name}: Ollama is not reachable. Is it running?"
+    if "timeout" in name.lower() or "timed out" in text.lower():
+        return f"{name}: the model did not answer in time"
+    return f"{name}: {text[:160]}" if text else name
+
+
 def structured(llm: Any, schema: Type[T], messages: list[Any], step: str) -> T:
     """
     Ask ``llm`` for an answer in ``schema`` (LangChain structured output),
@@ -88,4 +109,6 @@ def structured(llm: Any, schema: Type[T], messages: list[Any], step: str) -> T:
             if "timeout" in type(exc).__name__.lower() or "timed out" in str(exc).lower():
                 break  # a second try would only wait as long again
         logger.warning("Curriculum step %s attempt %d failed: %s", step, attempt, last_error)
-    raise CurriculumModelError(f"The language model failed at the {step} step ({type(last_error).__name__}).")
+    raise CurriculumModelError(
+        f"The language model failed at the {step} step ({describe_model_error(last_error, llm)})."
+    ) from last_error

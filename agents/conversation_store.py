@@ -24,6 +24,8 @@ import threading
 from pathlib import Path
 from typing import Any, Optional
 
+from agents.sqlite_utils import DatabaseBusy, connect, write_transaction
+
 
 DEFAULT_DB_PATH = Path(__file__).resolve().parent / "conversation_state.sqlite3"
 
@@ -39,10 +41,7 @@ class ConversationStore:
         # agent's own background threads (e.g. the MCP client) may call
         # this from different threads; the lock below serializes access
         # since a single sqlite3 connection is not otherwise thread-safe.
-        self._connection = sqlite3.connect(
-            str(self.db_path),
-            check_same_thread=False,
-        )
+        self._connection = connect(self.db_path)
         self._lock = threading.Lock()
 
         with self._lock:
@@ -99,7 +98,7 @@ class ConversationStore:
 
         state_json = json.dumps(state, ensure_ascii=False)
 
-        with self._lock:
+        with write_transaction(self._connection, self._lock, DatabaseBusy):
             self._connection.execute(
                 """
                 INSERT INTO conversation_state
@@ -110,7 +109,6 @@ class ConversationStore:
                 """,
                 (conversation_id, agent_name, state_json),
             )
-            self._connection.commit()
 
     def close(self) -> None:
         """Close the underlying SQLite connection."""

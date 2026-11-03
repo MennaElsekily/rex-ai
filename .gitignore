@@ -39,3 +39,17 @@ agents/curriculum_research/curricula.sqlite3
 agents/curriculum_research/documents/
 
 PROJECT_HANDOVER.md
+
+# Agent 4: generated documents (drafts, versions, review history) and their PDFs
+agents/document_generation/documents.sqlite3
+agents/document_generation/documents/
+
+# Agent 5: marketing campaigns (drafts, versions, review history)
+agents/marketing/marketing.sqlite3
+
+# SQLite runtime companions of any database (write-ahead log, shared memory, rollback journal)
+*.sqlite3-*
+
+# ChromaDB index of the course catalogue: runtime state, rebuilt by `python -m knowledge_base.pipeline`.
+# (A copy was committed once and is still tracked: ignore rules do not untrack. See README "Git and runtime files".)
+knowledge_base/vector_db/

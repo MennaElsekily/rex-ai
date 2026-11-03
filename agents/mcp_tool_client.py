@@ -21,9 +21,11 @@ Every tool returns one JSON object; call_tool() parses it into a dict.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import sys
 import threading
+import weakref
 from pathlib import Path
 from typing import Any, Optional
 
@@ -40,6 +42,23 @@ class McpToolError(RuntimeError):
 def _drop_none(arguments: dict[str, Any]) -> dict[str, Any]:
     """Omit unset optional arguments so the server's defaults apply."""
     return {key: value for key, value in arguments.items() if value is not None}
+
+
+# Every client this process created and has not closed. When the application exits, atexit closes them, which ends the
+# server subprocesses this process started (and only those: a server another process or the user started is never touched).
+_OPEN_CLIENTS: "weakref.WeakSet[McpToolClient]" = weakref.WeakSet()
+
+
+def close_all_clients() -> None:
+    """Close every MCP client of this process. Safe to call more than once."""
+    for client in list(_OPEN_CLIENTS):
+        try:
+            client.close()
+        except Exception:  # one client failing to close must not keep the others' servers running
+            pass
+
+
+atexit.register(close_all_clients)
 
 
 class McpToolClient:
@@ -72,6 +91,7 @@ class McpToolClient:
         self._stop_event: Optional[asyncio.Event] = None
         self._ready_event = threading.Event()
         self._startup_error: Optional[BaseException] = None
+        _OPEN_CLIENTS.add(self)
 
     def start(self) -> None:
         """
@@ -164,6 +184,15 @@ class McpToolClient:
             return future.result(timeout=self._startup_timeout)
         except McpToolError:
             raise
+        except TimeoutError as exc:
+            # str(TimeoutError()) is empty: say what timed out. The server is stopped, so the next call starts
+            # a fresh one (a first call may be slow because the server loads its models on first use).
+            what = f"the {args[0]} tool" if args and isinstance(args[0], str) else "the request"
+            self.close()
+            raise McpToolError(
+                f"The {self._server_name} MCP server did not answer {what} within "
+                f"{self._startup_timeout:g} seconds; it was stopped."
+            ) from exc
         except Exception as exc:
             # Transport failure (e.g. the server process died): drop this
             # session so the next call starts a fresh server.
@@ -214,12 +243,16 @@ class McpToolClient:
         ]
 
     def close(self) -> None:
-        """Stop the server subprocess and background thread."""
-        if self._loop is not None and self._stop_event is not None:
-            self._loop.call_soon_threadsafe(self._stop_event.set)
+        """Stop the server subprocess and background thread. Safe to call more than once, and when the server already died."""
+        loop, stop_event, thread = self._loop, self._stop_event, self._thread
+        if loop is not None and stop_event is not None:
+            try:
+                loop.call_soon_threadsafe(stop_event.set)
+            except RuntimeError:  # the loop is already closed: the session has ended by itself
+                pass
 
-        if self._thread is not None:
-            self._thread.join(timeout=10)
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=10)
 
         self._session = None
         self._thread = None

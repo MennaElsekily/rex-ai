@@ -51,15 +51,15 @@ The authoritative brief is **"REX AI – Smart Academy Multi-Agent System – AI
 | **1. REX Assistant** | Arabic/English chatbot; ask follow-up questions (background, career goal, skill level, online/offline, budget, time); recommend courses and explain why; answer questions on content, duration, format, fees, offers, prerequisites, instructors, audience; use approved data only; capture leads with consent | `agents/rex_assistant/` LangGraph workflow, two modes (discovery and direct questions), RAG through MCP, consent-gated lead capture to a JSONL file | ✅ Verified live (with synthetic data) |
 | **2. RFP & Tender Research** | Egypt + Saudi Arabia only; search portals; extract title, organisation, country, deadline, eligibility, category, link, date, documents; filter expired/unrelated; dedupe; summarise; assess qualification; store in a searchable dashboard; notify about new RFPs; flag Egypt immediately, monitor Saudi | `agents/rfp_research/`: World Bank API (Egypt), web research for both countries (official portals, tender sites, open web EN+AR via Tavily) with LLM field extraction, filters (expired, stale, works contracts, categories, deadline range), duplicates across sites, relevance + qualification chains, business rule, one admin review queue (pending → approved/rejected, audited), searchable dashboard of approved tenders, in-app alerts | ⚠️ Mostly — Saudi Arabia has no tender API (web research only); alerts in-app only; extraction quality limited by the 3B model and source pages |
 | **3. Curriculum Research** | Generate structured curricula, compare with accreditation frameworks, PDF, review loop | `agents/curriculum_research/` **rebuilt 2026-10-27/28** (LangGraph + LangChain + Curriculum MCP server): generation in English/Arabic with deterministic validation and one repair, revisions as versions, catalogue suggestions (Workflow B), evidence-based framework alignment, English/Arabic PDFs, admin approval in the Curricula tab. Details: [CURRICULUM_AGENT_ARCHITECTURE.md](CURRICULUM_AGENT_ARCHITECTURE.md) | ⚠️ Works end to end (live over MCP, temp storage); research off and no framework files until the owner provides them; 3B content quality modest |
-| **4. Document Generation** | At least three PDF document types | Routing keyword exists in the orchestrator; **no agent registered** | ❌ Missing |
-| **5. Marketing** | Campaign content from course details | Routing keyword exists; **no agent registered** | ❌ Missing |
-| Orchestrator | Route requests to agents; at least one workflow with 2+ agents | `agents/orchestrator.py` LangGraph router. Its curriculum→marketing workflow cannot finish because marketing is not registered | ⚠️ Partial |
+| **4. Document Generation** | At least three PDF document types | `agents/document_generation/` (LangGraph + Document MCP server + own SQLite store and PDF renderer): nine generated types from an *approved* curriculum plus the read-only Curriculum PDF, English or Arabic, validated, saved as pending review, approved only by an administrator in the Documents tab. See [architecture.md](architecture.md) | 🧪 Tested (mocked); real-model runs made for most types; Arabic question banks are not reliable on the default 3B model |
+| **5. Marketing** | Campaign content from course details | `agents/marketing/` (LangGraph + Marketing MCP server + own SQLite store): a strategy and 1 to 3 variations of social captions, ad copy, LinkedIn posts, e-mail, WhatsApp, headlines and calls to action for an *approved* course, validated against invented facts, pending review until an administrator approves, downloadable only when approved; nothing is published or sent. See [architecture.md](architecture.md) | 🧪 Tested (mocked); real-model runs made in English; Arabic is checked strictly and may fail validation on the default 3B model |
+| Orchestrator | Route requests to agents; at least one workflow with 2+ agents | `agents/orchestrator.py` LangGraph router over the five agents; which agents run is decided by the deliverables a request asks for (`agents/routing.py`). Multi-agent requests such as "Create a curriculum about data analysis and prepare a course proposal" run Curriculum then Document Generation; a campaign is made only from an *approved* course | 🧪 Tested (mocked) |
 | Knowledge base / RAG | Course catalogue, descriptions, instructors, pricing & promotions, schedules & formats, FAQs, admission; filterable metadata | `knowledge_base/` generic pipeline + synthetic Andalusia catalogue covering all those data types | ✅ Verified live (synthetic data) |
 
 ### 1.3 How the agents relate
 
 - **Users (learners)** talk to **REX Assistant directly**.
-- **Admins** talk to the **Admin orchestrator**, which routes to **RFP Research** and **Curriculum Research**. REX is deliberately excluded there. Curricula are approved in the Curricula tab through `AdminService`, never by the agent.
+- **Admins** talk to the **Admin orchestrator**, which routes to **RFP Research**, **Curriculum Research**, **Document Generation** and **Marketing**. REX is deliberately excluded there. Curricula are approved in the Curricula tab through `AdminService`, never by the agent.
 - REX reads the **knowledge base** through an **MCP tool**. The Curriculum Agent reads the same index (read-only) through its own MCP server. Tenders found by RFP Research are **never** added to the knowledge base: they stay in the tender store for admin review.
 
 ---
@@ -86,7 +86,12 @@ flowchart TB
     CMCP --> KB
     CMCP --> CST[("curricula.sqlite3 + PDFs")]
     AS -->|"approve / request changes, PDF"| CST
-    ORC -.->|"keyword routes, nothing registered"| MISSING["Document Generation ❌<br/>Marketing ❌"]
+    ORC --> DOC["Document Generation<br/>agents/document_generation/ (LangGraph)"]
+    DOC -->|"stdio MCP"| DMCP["agents/document_mcp_server.py"]
+    DMCP --> DST[("documents.sqlite3 + PDFs")]
+    ORC --> MKT["Marketing<br/>agents/marketing/ (LangGraph)"]
+    MKT -->|"stdio MCP"| MMCP["agents/marketing_mcp_server.py"]
+    MMCP --> MST[("marketing.sqlite3")]
     RFP --> WB["World Bank API"]
     RFP --> TAV["Tavily web search"]
     RFP -->|"every tender as PENDING"| OPP[("rfp_opportunities.sqlite3<br/>opportunities + opportunity_audit + alert_state")]
@@ -699,7 +704,7 @@ The full design, decisions, verified sources, model comparison, coverage matrix 
 | `Helsinki-NLP/opus-mt-ar-en` | Translation model (MarianMT) | Arabic → English query text | `knowledge_base/translator.py` | str → str | Local | none | ✅ live | Weak on Egyptian dialect and brand names (mitigated by the mappings) |
 | `qwen2.5:3b` (REX, RFP Research, Curriculum Agent) via Ollama | LLM | REX: answers and profile extraction; RFP: relevance/qualification; Agent 3: curriculum content, repairs, suggestions, alignment judgements | `rex_assistant/graph._get_llm`, `rfp_research/tools._get_llm`, `curriculum_research/llm.get_llm` (`CURRICULUM_LLM_MODEL`; `qwen3.5:4b` compared in the Agent 3 doc §17) | messages → text / structured object | Local service (Ollama must be running) | model name only | ✅ live | Small model: occasional wording errors, mixed-language Arabic |
 | ChromaDB (`chromadb` 1.5.9) | Vector database (embedded) | Store/search vectors + metadata | `knowledge_base/vector_store.py` | vectors → nearest chunks | Local files `knowledge_base/vector_db/` | none | ✅ live | Concurrent writers can corrupt it — stop the app before ingesting |
-| `mcp` (official SDK) | Protocol library | The three MCP servers and their clients over stdio | `agents/rag_mcp_server.py`, `agents/tender_mcp_server.py`, `agents/curriculum_mcp_server.py`, `agents/mcp_tool_client.py` | tool call → dict | Local subprocess | none | ✅ live | |
+| `mcp` (official SDK) | Protocol library | The five MCP servers and their clients over stdio | `agents/rag_mcp_server.py`, `agents/tender_mcp_server.py`, `agents/curriculum_mcp_server.py`, `agents/document_mcp_server.py`, `agents/marketing_mcp_server.py`, `agents/mcp_tool_client.py` | tool call → dict | Local subprocess | none | ✅ live | |
 | LangGraph (`langgraph`) | Workflow library | State graphs for REX, RFP, the Curriculum Agent and the orchestrator | `rex_assistant/graph.py`, `rfp_research/graph.py`, `curriculum_research/graph.py`, `orchestrator.py` | state → state | Local | none | ✅ | |
 | LangChain (`langchain_core`, `langchain_ollama`) | LLM library | Messages, prompt templates, `with_structured_output`, `ChatOllama` | `rex_assistant/graph.py` + `prompts.py`, `rfp_research/tools.py`, `curriculum_research/llm.py` + `prompts.py` | | Local | | ✅ | Used through these split packages; the `langchain` meta-package is not needed (`langchain-ollama` installs the `ollama` client itself) |
 | World Bank Procurement Notices API | Public web API | Egypt tender notices | `api_clients/world_bank.py` | query → JSON | Remote (stdlib `urllib`) | no key | ✅ live (2 Egypt opportunities on 2026-10-27) | Only World Bank-financed projects |
@@ -1043,7 +1048,7 @@ One **source document** → several **chunks** (text with a context header) → 
 
 ### 12.1 Results
 
-`python -m pytest -q` → **1284 passed** (run 2026-10-28, about 100 s). The tests use no network, no Ollama and no real database: `tests/conftest.py` points the default tender and curriculum databases and document folders at temporary paths, keeps the web search offline, gives the RFP agent the in-process tender tools, and gives the Curriculum Agent in-process tools on temporary storage with a model that fails if called (the real MCP servers are covered by `test_mcp_client.py`, `test_tender_mcp_server.py` and `test_curriculum_mcp_server.py`).
+`python -m pytest -q` → **2796 passed, 0 failed, 0 skipped, 0 warnings** (run 2026-11-03 on both the project `.venv` and the global Python 3.13; about 8 to 10 minutes). The tests use no network, no Ollama and no real database: `tests/conftest.py` points the default tender and curriculum databases and document folders at temporary paths, keeps the web search offline, gives the RFP agent the in-process tender tools, and gives the Curriculum Agent in-process tools on temporary storage with a model that fails if called (the real MCP servers are covered by `test_mcp_client.py`, `test_tender_mcp_server.py` and `test_curriculum_mcp_server.py`).
 
 ### 12.2 Test files
 
@@ -1121,7 +1126,7 @@ Mocked tests do **not** prove that live services work; the live checks above wer
 - [x] MCP for the RFP agent: tender MCP server with 4 tools, shared MCP client, graph on the tools (live run through the real server)
 - [x] Approval-triggered application workflow (dry run), application profile, three separate statuses, attempt history, real tender DB migrated
 - [x] Curriculum Agent (Agent 3) rebuilt: LangGraph + LangChain + Curriculum MCP server; English/Arabic curricula with deterministic validation and one repair; revisions as versions; catalogue suggestions; evidence-based framework alignment; English/Arabic PDFs; admin approval in the Curricula tab (live run through the real MCP server; details in [CURRICULUM_AGENT_ARCHITECTURE.md](CURRICULUM_AGENT_ARCHITECTURE.md))
-- [x] 1284 automated tests passing
+- [x] 2796 automated tests passing (2026-11-03, both interpreters)
 
 ### Implemented but not fully verified ⚠️
 - [ ] Full admin dashboard click-through in a real browser
@@ -1131,24 +1136,23 @@ Mocked tests do **not** prove that live services work; the live checks above wer
 ### Partially implemented ⚠️
 - [ ] RFP Research: Saudi tenders only from web research (no API); alerts in-app only; browser click-through of the new dashboard
 - [ ] Applications: no source supports automatic submission; the email EOI is dry run only (live sending needs a separate, approved implementation)
-- [ ] Orchestrator multi-agent workflow (curriculum → marketing) cannot complete without a marketing agent
+- [ ] Orchestrator multi-agent workflows are tested with fakes; a full real-model run of a multi-agent request was not made
 
 ### Missing ❌
-- [ ] Document Generation agent (brief: at least 3 PDF document types)
-- [ ] Marketing agent
-- [ ] Demonstrated two-agent workflow (brief minimum acceptance criterion)
+- [ ] Individual administrator accounts (one shared passcode; audit trails record the session, not the person)
+- [ ] A demonstrated two-agent workflow with real models in a browser (automated tests cover it with fakes)
 - [ ] Production lead storage (JSONL placeholder)
 
 ### Known bugs and limitations
 - 3B model: occasional odd Arabic wording, duplicated names in a closing sentence, citation numbers off by one
 - `JSONLLeadStore` default path depends on the working directory
 - The legacy `create_orchestrator()` path persists REX state before consent (not used by the app)
-- `knowledge_base/vector_db/chroma.sqlite3` and `knowledge_base/metadata/*.json` are git-tracked and now contain the new index
+- `knowledge_base/vector_db/chroma.sqlite3` and `knowledge_base/metadata/*.json` are git-tracked and now contain the new index. The vector database is now in `.gitignore` and the tracked file is marked `skip-worktree` in this working copy (see the README, "Git and runtime files")
 
 ### Recommended next steps
 1. Test the app in a browser using the manual test list (User, Admin, Arabic).
 2. Decide what to commit (merge still pending; review the staged and unstaged changes).
-3. Build the Document Generation and Marketing agents and one two-agent workflow, to meet the brief's acceptance criteria.
+3. Walk through Agents 4 and 5 and one two-agent request in a browser with the manual tests (Sections J4, J5 and J6 of [MANUAL_TEST_PLAN.md](MANUAL_TEST_PLAN.md)).
 4. Replace the synthetic catalogue with real academy data when available (section 8.5).
 
 ---

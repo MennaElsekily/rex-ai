@@ -51,6 +51,55 @@ def in_process_curriculum_agent(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def temporary_document_storage(tmp_path, monkeypatch):
+    """Agent 4's database and PDF folder default to temporary paths in tests."""
+    from agents.document_generation import document_store, document_tools
+
+    monkeypatch.setattr(document_store, "DEFAULT_DB_PATH", tmp_path / "default_documents.sqlite3")
+    monkeypatch.setattr(document_tools, "DEFAULT_DOCUMENTS_DIR", tmp_path / "default_document_pdfs")
+
+
+@pytest.fixture(autouse=True)
+def in_process_document_agent(tmp_path, monkeypatch):
+    """
+    Agent 4 by default uses the in-process toolbox on temporary storage and a
+    model that fails if called: tests that generate pass a fake LLM
+    (tests/document_fakes.py). tests/test_document_mcp_server.py covers the
+    real server.
+    """
+    from agents.document_generation import document_agent
+    from tests.curriculum_fakes import NoModel
+    from tests.document_fakes import in_process_document_tools
+
+    monkeypatch.setattr(document_agent, "default_document_tools",
+                        lambda: in_process_document_tools(tmp_path / "document_agent"))
+    monkeypatch.setattr(document_agent, "default_llm", lambda model=None: NoModel())
+
+
+@pytest.fixture(autouse=True)
+def temporary_marketing_storage(tmp_path, monkeypatch):
+    """Agent 5's database defaults to a temporary path in tests."""
+    from agents.marketing import marketing_store
+
+    monkeypatch.setattr(marketing_store, "DEFAULT_DB_PATH", tmp_path / "default_marketing.sqlite3")
+
+
+@pytest.fixture(autouse=True)
+def in_process_marketing_agent(tmp_path, monkeypatch):
+    """
+    Agent 5 by default uses the in-process toolbox on temporary storage and a model that fails if called: tests that
+    generate pass a fake LLM (tests/marketing_fakes.py). tests/test_marketing_mcp_server.py covers the real server.
+    """
+    from agents.marketing import marketing_agent
+    from tests.curriculum_fakes import NoModel
+    from tests.marketing_fakes import in_process_marketing_tools
+
+    monkeypatch.setattr(marketing_agent, "default_marketing_tools",
+                        lambda: in_process_marketing_tools(tmp_path / "marketing_agent"))
+    monkeypatch.setattr(marketing_agent, "default_llm", lambda model=None: NoModel())
+
+
+@pytest.fixture(autouse=True)
 def temporary_tender_database(tmp_path, monkeypatch):
     monkeypatch.setattr(opportunity_store, "DEFAULT_DB_PATH", tmp_path / "default_tenders.sqlite3")
     # The academy's uploaded documents, likewise.
