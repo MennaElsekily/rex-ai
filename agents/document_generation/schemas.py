@@ -34,6 +34,7 @@ EDITABLE_TYPES = ("paragraph", "bullets")
 Id = Annotated[str, Field(max_length=12)]
 Short = Annotated[str, Field(max_length=200)]
 Text = Annotated[str, Field(max_length=700)]
+Teaching = Annotated[str, Field(max_length=1500)]   # explanatory text a participant reads (participant guide)
 
 
 class DescriptionParts(BaseModel):
@@ -50,6 +51,8 @@ class ProposalParts(BaseModel):
 
 class ModuleGuide(BaseModel):
     module_id: Id = Field(description='The module id exactly as given, e.g. "M1".')
+    explanation: Teaching = Field(description="A teaching explanation of the module for a learner, in your own words: 4 to 7 sentences that explain what each listed topic is and why it matters. Do not just list the topics.")
+    example: Teaching = Field(description="One short worked example or illustration (2 to 4 sentences) that shows one of the module's topics in use.")
     key_concepts: list[Short] = Field(min_length=2, max_length=6, description="Key concepts the module covers; use the listed topics.")
     exercise: Text = Field(description="Practice instructions for the participant, based on the module's listed activities.")
 

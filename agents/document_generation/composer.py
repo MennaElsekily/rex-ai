@@ -175,7 +175,9 @@ def _module_guides(ctx):
             blocks += [heading(s["activities"]), bullets(activities, CURRICULUM)]
         guide = guides.get(module.get("id"))
         if guide:
-            blocks += [heading(s["key_concepts"]), bullets(guide.key_concepts, GENERATED),
+            blocks += [heading(s["explanation"]), paragraph(guide.explanation, GENERATED),
+                       heading(s["guide_example"]), paragraph(guide.example, GENERATED),
+                       heading(s["key_concepts"]), bullets(guide.key_concepts, GENERATED),
                        heading(s["exercise"]), paragraph(guide.exercise, GENERATED)]
     return blocks
 

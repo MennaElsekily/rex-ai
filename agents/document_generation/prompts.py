@@ -24,9 +24,20 @@ _RULES = """Rules:
 - Keep the text short, plain and professional."""
 
 
-def _prompt(task: str) -> ChatPromptTemplate:
+# The participant guide teaches: unlike the other documents it may explain the listed topics with well-established general
+# knowledge. What the curriculum states (topics, hours, outcomes) stays as given, and nothing new is added to it.
+_TEACHING_RULES = _RULES.replace(
+    """- Use ONLY the approved curriculum given below. Never add facts, statistics, prices, dates, prerequisites, tools or
+  hours that it does not state. If something is not in the curriculum, leave it out.""",
+    """- The approved curriculum below decides WHAT is taught: teach only its listed topics, in its module order. You may
+  explain those topics with accurate, well-established general knowledge, but never add topics, tools, prerequisites,
+  statistics, prices, dates or hours that the curriculum does not state.""").replace(
+    "- Keep the text short, plain and professional.", "- Write plain, professional text a learner can follow.")
+
+
+def _prompt(task: str, rules: str = _RULES) -> ChatPromptTemplate:
     return ChatPromptTemplate.from_messages([
-        ("system", "You write professional training documents for an academy from an approved curriculum.\n" + _RULES
+        ("system", "You write professional training documents for an academy from an approved curriculum.\n" + rules
          + "\n" + task),
         ("human", "Approved curriculum:\n{curriculum_block}\n{problems_block}"),
     ])
@@ -35,8 +46,16 @@ def _prompt(task: str) -> ChatPromptTemplate:
 DESCRIPTION = _prompt("Write the summary (2-3 sentences) and the assessment approach (1-2 sentences, using only the listed assessments).")
 PROPOSAL = _prompt("Write a proposal: executive summary, background and need (use only the rationale and audience given, no statistics), "
                    "methodology (use only the activity types listed) and the expected deliverables.")
-GUIDE = _prompt("Write a participant guide: a welcome introduction, instructions for the listed assessments, and for EVERY module id "
-                "given, its key concepts (from the listed topics) and a practice exercise (based on the listed activities).")
+GUIDE = _prompt("Write a participant guide that TEACHES the course. Write a welcome introduction, instructions for the listed "
+                "assessments, and for EVERY module id given:\n"
+                "- explanation: 4 to 7 sentences in your own words that explain each listed topic of that module (what it is and why "
+                "it matters). Teach the content itself, for example what each topic is, how it works and how it is used; do not "
+                "announce what the module will cover and do not start with \"In this module\". Do not copy the topic list or the "
+                "module title as the explanation.\n"
+                "- example: one short worked example that shows a topic of the module in use.\n"
+                "- key_concepts: the main ideas of the listed topics.\n"
+                "- exercise: a practice exercise for the learner, based on the listed activities.\n"
+                "Use each module id exactly as given.", _TEACHING_RULES)
 CAPSTONE = _prompt("Write a short introduction to the capstone project and guidance on preparing its deliverables. Use only the project given.")
 
 def _unit_prompt(task: str) -> ChatPromptTemplate:
