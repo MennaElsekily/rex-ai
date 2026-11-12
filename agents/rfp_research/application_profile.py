@@ -49,8 +49,20 @@ PROFILE_FIELDS = {
     "contact_email": "Contact email",
     "contact_phone": "Contact phone",
     "website": "Website",
+    # Longer, free-text fields: used to write a genuinely tender-specific
+    # expression-of-interest email (applications.py), never invented when
+    # absent.
+    "overview": "Organisation overview",
+    "services": "Main services and areas of expertise",
+    "experience": "Relevant experience and previous projects",
+    "qualifications": "Qualifications and certifications",
 }
 MAX_FIELD_CHARS = 300
+LONG_PROFILE_FIELDS = ("overview", "services", "experience", "qualifications")
+MAX_LONG_FIELD_CHARS = 2000
+# A reserved domain (RFC 2606): the one signal that a saved profile is
+# demonstration content, not a real organisation's details.
+DEMO_EMAIL_DOMAIN = "example.com"
 
 DOCUMENT_TYPES = {
     "company_profile": "Company profile",
@@ -80,6 +92,12 @@ def _now() -> str:
 
 def _clean(value: Any, limit: int = MAX_FIELD_CHARS) -> str:
     return _CONTROL.sub(" ", str(value or "")).strip()[:limit]
+
+
+def is_demo_profile(fields: dict[str, str]) -> bool:
+    """True when the saved contact email uses the reserved example.com domain."""
+    email = str(fields.get("contact_email") or "").strip().casefold()
+    return email.endswith(f"@{DEMO_EMAIL_DOMAIN}")
 
 
 def _display_name(file_name: str) -> str:
@@ -142,7 +160,8 @@ class ApplicationProfile:
         unknown = set(values) - set(PROFILE_FIELDS)
         if unknown:
             raise ValueError(f"Unknown profile fields: {', '.join(sorted(unknown))}")
-        cleaned = {field: _clean(value) for field, value in values.items()}
+        cleaned = {field: _clean(value, MAX_LONG_FIELD_CHARS if field in LONG_PROFILE_FIELDS else MAX_FIELD_CHARS)
+                  for field, value in values.items()}
         email = cleaned.get("contact_email")
         if email and not _EMAIL.match(email):
             raise ValueError("The contact email is not a valid email address.")

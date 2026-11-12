@@ -365,6 +365,45 @@ def _is_arabic_filler(word: str) -> bool:
     return bool(candidates & _FILLER_AR)
 
 
+def _is_possessive_attribute(word: str) -> bool:
+    """
+    'ساعاتها' (its hours), 'مدتها' (its duration): a course attribute with
+    the attached pronoun "-ها" -- a reference to the course under
+    discussion. (A feminine noun's final ة becomes ت before the suffix.)
+    """
+    if len(word) < 5 or not word.endswith("ها"):
+        return False
+    stem = word[:-2]
+    stems = {stem, stem[:-1] + "ه"} if stem.endswith("ت") else {stem}
+    return any(_is_arabic_filler(s) for s in stems)
+
+
+def ordinal_reference(text: str, count: int) -> Optional[int]:
+    """
+    The position a question picks from the courses just listed or
+    recommended: "Tell me more about the first course", "the second one",
+    "الدورة الأولى", "the last one". Ordinal words only (not bare numbers,
+    which a question may use as quantities), next to a course word or
+    "one".
+    """
+    if count < 1:
+        return None
+    normalized = normalize_for_matching(text or "")
+    words = re.findall(r"[^\W_]+", normalized)
+    has_anchor = bool(_COURSE_NOUN.search(normalized)) or "one" in words or bool(
+        set(words) & _WEAK_REFERENCE_AR) or any(w.startswith(("الدور", "الكورس")) for w in words)
+    if not has_anchor:
+        return None
+    one_ar = normalize_for_matching("واحد")      # "one", a number rather than an ordinal
+    for word in words:
+        if word in _LAST:
+            return count - 1
+        index = _ORDINALS.get(word, _ORDINALS_AR.get(word) if word != one_ar else None)
+        if index is not None and index < count:
+            return index
+    return None
+
+
 def content_words(text: str) -> list[str]:
     """The words of a question beyond question words, attributes and 'the course'."""
     arabic = normalize_for_matching(transliterate_arabizi(text or ""))
@@ -379,7 +418,8 @@ def _references(text: str) -> tuple[bool, bool]:
     # turns "course" into "كورس"); Arabic words also after it.
     latin = normalize_for_matching(text or "")
     words = set(_AR_WORD.findall(normalize_for_matching(transliterate_arabizi(text or ""))))
-    strong = bool(_STRONG_REFERENCE_EN.search(latin) or words & _STRONG_REFERENCE_AR)
+    strong = bool(_STRONG_REFERENCE_EN.search(latin) or words & _STRONG_REFERENCE_AR
+                  or any(_is_possessive_attribute(w) for w in words))
     weak = bool(_WEAK_REFERENCE_EN.search(latin) or words & _WEAK_REFERENCE_AR)
     return strong, weak
 
@@ -521,21 +561,6 @@ def merge_evidence(own: dict[str, Any], general: dict[str, Any]) -> dict[str, An
     ]
     return {**own, "status": "ok" if chunks else "no_results",
             "chunks": [{**chunk, "reference": n} for n, chunk in enumerate(chunks, start=1)]}
-
-
-def course_filter(courses: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    """Chroma filter for the passages of these courses (by id or intake code)."""
-    ids = [c["course_id"] for c in courses if c.get("course_id")]
-    if not ids:
-        return None
-    # Ingestion stores a numeric id ("1010") as a number, and Chroma
-    # compares types strictly: match both forms, one type per list.
-    forms: list[list[Any]] = [ids]
-    numbers = [int(i) for i in ids if i.isdigit()]
-    if numbers:
-        forms.append(numbers)
-    return {"$or": [{field: {"$in": values}} for values in forms
-                    for field in ("field_course_id", "field_course_code")]}
 
 
 def courses_of_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:

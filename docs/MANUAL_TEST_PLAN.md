@@ -103,8 +103,9 @@ New conversation. Send one message at a time.
 | E.5 | `beginner` | Asks **online or offline** | |
 | E.6 | `online` | Asks **budget** | |
 | E.7 | `5000` | Asks **available time** | |
-| E.8 | `2 hours per day` | Recommendation: **Digital Marketing Fundamentals** (Beginner, Online, **4500 EGP**); layout lists Why it fits you / Level / Delivery / Fees / Entry requirements; then asks to save your details | |
-| E.9 | Check E.8's facts against B-style questions | No course name that isn't in the catalogue; no course listed twice; anything above beginner level marked "may be a step up" | |
+| E.8 | `2 hours per day` | Recommendation: **Digital Marketing Fundamentals** (MKT-101) (Beginner, Online, **4500 EGP**); each course shows its catalogue ID and lists Why it fits you / Who it is for / Level / Duration / Delivery / Fee / Entry requirements / Source; then asks to save your details | |
+| E.9 | Check E.8's facts against the catalogue (`knowledge_base/documents/course_list.md`) | Every course ID and name exists exactly as in the catalogue; no course listed twice; no prerequisite the catalogue doesn't list; a fact the catalogue doesn't state says "not stated in the catalogue"; a course above beginner level is left out when a beginner course fits, or marked as above your level with its entry requirements | |
+| E.9b | New conversation: `Help me choose a course`, then `Computer Engineer`, `Data Analytics`, `Beginner`, `Online or offline`, `4000`, `3 days per week` | Recommends **Excel for Business Analysis** (DA-101): Offline (on campus, Cairo), 3200 EGP within your budget of 4000. Never "Basic Computer Literacy" or a "Data-led Labs" course. "Online or offline" counts as no preference | |
 | E.10 | `no` | "Nothing was saved" | |
 
 **Variations** (new conversation each time):
@@ -120,6 +121,25 @@ New conversation. Send one message at a time.
 | E.17 | Mid-discovery: `What are the prerequisites of the Flutter Mobile App Development course?` | Answers the question, then repeats the pending discovery question | |
 | E.18 | Arabic: `رشحلي كورس مناسب ليا` and answer in Arabic | All questions and the recommendation in Arabic | |
 | E.19 | Arabic button: switch the UI to العربية, New conversation, click the example `ساعدني أختار دورة` | Starts discovery (not a greeting) | |
+
+## E2. REX: the three modes over RAG/MCP (English and Arabic)
+
+Which catalogue you see depends on the index the app uses (`REX_VECTOR_DB_DIR`, default `knowledge_base/vector_db/`). The expected results below are for the catalogue in `knowledge_base/documents/` (14 courses, see `course_list.md`). Open **Sources** under each answer to see the file, page, course, chunk, scores and retrieved text.
+
+| # | Message (new conversation each time unless noted) | Expected | Result |
+|---|---|---|---|
+| E2.1 | `What courses does the academy offer?` | "The academy catalogue lists 14 courses:", numbered 1-14 by department. Every course appears once with its exact name and ID; facts not in the catalogue say "not stated in the catalogue" | |
+| E2.2 | `What Data Analytics courses does the academy offer?` | Exactly DA-101, DA-201, DA-301 ("3 of the catalogue's 14 courses…") | |
+| E2.3 | `What beginner courses do you offer?` | Only the Beginner courses (AI-101, DA-101, MKT-101, MOB-101, SW-101) | |
+| E2.4 | `ما هي جميع الدورات التي تقدمها الأكاديمية؟` | Arabic heading "يضم كتالوج الأكاديمية 14 دورة:" and all 14 courses with their English catalogue names | |
+| E2.5 | `Tell me more about SQL and Power BI for Data Analysts.` then `What are its prerequisites?`, `How long does it take?`, `What level is it?`, `What are the fees?` | Every answer is about DA-201: prerequisite DA-101, 48 hours / 8 weeks, Intermediate, 7800 EGP. No question needs the course name again | |
+| E2.6 | `ما هي متطلبات الالتحاق بدورة Excel for Business Analysis؟` then `كم عدد ساعاتها؟` | Arabic answers about DA-101: basic computer skills; 24 hours | |
+| E2.7 | Same conversation as E2.1, then `Recommend beginner courses for me` and the profile (`Computer Engineer`, `Data Analytics`, `Online or offline`, `4000`, `3 days per week`), then `no`, then `Tell me more about the first course` | The recommendation (e.g. DA-101) is followed by details of the **first recommended** course | |
+| E2.8 | `I am a beginner interested in data analytics. Recommend suitable courses.` and the same profile | Only catalogue courses with catalogue facts; DA-101 3200 EGP "within your budget of 4000"; nothing above beginner level when a beginner course fits | |
+| E2.9 | `أنا مبتدئ ومهتم بتحليل البيانات. رشح لي دورات مناسبة.` and the profile in Arabic (`مهندس كمبيوتر`, `تحليل البيانات`, `أونلاين أو حضوري`, `4000`, `3 أيام في الأسبوع`) | REX asks for your background (it does not take "مبتدئ" as one); the same grounding rules as E2.8, labels in Arabic | |
+| E2.10 | `Tell me more about the Kubernetes Administration course.` | No invented course: REX says the catalogue does not cover it | |
+
+**Real execution trace (terminal).** With Ollama running, `$env:REX_REAL_MODEL_TESTS = "1"; python -m pytest tests/test_rex_real_mcp_e2e.py -s` ingests the catalogue into a temporary index and runs REX through the real RAG MCP server subprocess, in English and Arabic.
 
 ## F. REX: consent and lead saving
 
@@ -189,7 +209,7 @@ Needs internet and `TAVILY_API_KEY`. Each search takes about 1–2 minutes.
 
 ### J2. Applications after approval
 
-**These steps write real records** to `agents/rfp_research/rfp_opportunities.sqlite3` (decisions, attempts, a manual submission). To test without keeping them, stop the app first and copy the file aside, then put it back afterwards. **Nothing is ever sent**: every email is a dry run.
+**These steps write real records** to `agents/rfp_research/rfp_opportunities.sqlite3` (decisions, attempts, a manual submission). To test without keeping them, stop the app first and copy the file aside, then put it back afterwards. Preparing a draft never sends anything; sending is a separate, confirmed action (J.23 to J.27).
 
 | # | Steps | Expected | Result |
 |---|---|---|---|
@@ -206,6 +226,16 @@ Needs internet and `TAVILY_API_KEY`. Each search takes about 1–2 minutes.
 | J.20 | **Outcome** → *Awarded* → **Record outcome**; then **Correct back to Applied** | Application *Awarded*, then *Applied* again | |
 | J.21 | **History** in the tender panel; **Audit trail** tab | Attempts (adapter, dry run, triggered by `admin-session-…`, actor `system:application_workflow`) and events `review` / `application` | |
 | J.22 | Switch to Arabic | Tabs and statuses in Arabic (e.g. ملف التقديم, لم يتم التقدم) | |
+
+**Sending an application email.** Before these steps set `REX_EMAIL_TEST_RECIPIENT` in `.env` to an inbox **you** control, and restart the app. Never use a tender's address. To test without sending at all, leave `RESEND_API_KEY` empty: every send is then refused (J.27).
+
+| # | Steps | Expected | Result |
+|---|---|---|---|
+| J.23 | Approve a tender with the authorisation box ticked; **Tender review** → *Approved* → **Review application email** | The Tender dashboard opens the prepared draft: subject and body editable, "Will be sent to: <your REX_EMAIL_TEST_RECIPIENT>", and "Tender's own contact: … (never used: every email goes to the configured recipient)" | |
+| J.24 | Edit the body → **Save draft** | The edit is kept after the page redraws | |
+| J.25 | **Send** without ticking the confirmation | Refused: tick the confirmation first; nothing sent | |
+| J.26 | Tick the confirmation → **Send** (with a Resend key) | "Email sent" to your configured address only; the send history shows that same address as the recipient and the tender's contact only as reference | |
+| J.27 | Empty `RESEND_API_KEY` (or `REX_EMAIL_TEST_RECIPIENT`, or set it to `not-an-email`), restart, repeat J.26 | Red error naming the missing or invalid setting; nothing sent. Same in `REX_EMAIL_MODE=production`: the recipient never changes to the tender's contact | |
 
 ---
 
@@ -304,6 +334,41 @@ Use one chat conversation for J3.1–J3.8 (don't reload the page in between). Ea
 
 ---
 
+## M. Multi-agent workflows (Admin → **Ask agents**)
+
+These run the real model and can take 5 to 15 minutes each. They write curricula, documents and campaigns to the app's databases.
+
+| # | Request | Expected | Result |
+|---|---|---|---|
+| M.1 | `Create a 30-hour Excel for Business Analysis curriculum for beginners, then a course proposal document from it` | Summary: "1. Curriculum research: Curriculum drafted … [CUR-…, pending review; companion CUR-…]", "2. Document generation: Waiting for an administrator's approval…", "Step 2 used the curriculum from step 1.", "Done: 1/2 · Waiting: 1"; a review card with both languages | |
+| M.2 | Approve both languages in the card | The rest resumes by itself: a message "Resumed after approval" and the course proposal generated from the **approved version** of that curriculum | |
+| M.3 | `Create a 24-hour beginner curriculum about SQL for data analysts and then a marketing campaign for it`, then approve both languages | The campaign step runs for that course after the approval. Known limitation: with `qwen2.5:3b` a campaign with every channel is often refused by the claim checks (e.g. "no prior experience" when the course lists prerequisites); that refusal is correct, nothing is saved | |
+| M.4 | `Find training tenders in Egypt and create a curriculum for a data analytics course` | Two steps: Tender research (Egypt) and Curriculum research; the curriculum's title does not mention tenders or Egypt; "These steps ran independently." | |
+| M.5 | `Create a curriculum about SQL and then a marketing campaign for it` (no hours, no level) | The Curriculum agent asks for the missing details; step 2 is shown as waiting for your answer, **not** as failed | |
+| M.6 | `Recommend a course for me` | Not handled by the admin agents (REX is not in the admin orchestrator) | |
+
+---
+
+## N. Browser acceptance (real browser, isolated copy)
+
+Run against a **copy** of the project with its own data folders, `RESEND_API_KEY` empty and `REX_EMAIL_TEST_RECIPIENT` set to a test address, so nothing is sent and the real databases are not touched. Can be done by hand or with a browser driver (e.g. Playwright with Chrome).
+
+| # | Steps | Expected | Result |
+|---|---|---|---|
+| N.1 | Learner: "What courses does the academy offer?" | 14 courses, each once | |
+| N.2 | Learner: "What Data Analytics courses does the academy offer?" | DA-101, DA-201, DA-301 | |
+| N.3 | Learner: "Tell me more about SQL and Power BI for Data Analysts.", then "What are the fees?" | DA-201 answered; the follow-up gives 7,800 EGP | |
+| N.4 | Learner: a recommendation (Computer Engineer, Data Analytics, beginner, online or offline, 4000, 3 days a week) | Excel for Business Analysis (DA-101), 3,200 EGP, within budget; only catalogue courses | |
+| N.5 | Switch to العربية; ask the catalogue and a course question in Arabic | Right-to-left layout; Arabic answers; 14 courses | |
+| N.6 | Admin: sign in, open all nine sections; switch to Arabic and back | Each section opens; the section is kept when the language changes; the sidebar is right-to-left in Arabic | |
+| N.7 | Admin: J.23 to J.25 and J.27 | As described there; the confirmed send is blocked ("RESEND_API_KEY is not configured") | |
+| N.8 | Ask agents: create a curriculum; approve both languages in the chat card; download each PDF and the ZIP | Approve buttons disappear; still on Ask agents; the PDFs open; the ZIP holds two PDFs. If a language is a **Draft** (e.g. "Written in the wrong language: modules[1].title", a module title the translation left in English), it has no Approve button: open it in Curricula → Edit this version, fix the text, save (v2, pending review), approve, then download | |
+| N.9 | Curricula: edit the English curriculum's overview → **Save changes**; approve the new version | "Changes saved as a new version, pending review."; v2 listed and approved; v1's approval kept in the history | |
+| N.10 | Documents: generate a course proposal from that curriculum (v2); create its PDF; approve | The document names approved version 2; the PDF downloads; "Document approved." | |
+| N.11 | Marketing: create a campaign for that course; approve; download Markdown | The campaign names the course; "Approved … Nothing was published or sent."; the Markdown downloads | |
+
+---
+
 ## K. Failure handling
 
 | # | Steps | Expected | Result |
@@ -361,6 +426,10 @@ A manual pass here confirms the **live** system: real models, real services, the
 | J. Tender review | | | |
 | J2. Applications | | | |
 | J3. Curriculum Agent | | | |
+| J4. Documents | | | |
+| J5. Marketing | | | |
+| M. Multi-agent | | | |
+| N. Browser acceptance | | | |
 | K. Failures | | | |
 
 Tested by: ______  Date: ______

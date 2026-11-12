@@ -50,6 +50,7 @@ from agents.curriculum_research.schemas import (
     SuggestionList,
     assemble_curriculum,
 )
+from agents.curriculum_research.safe_repair import apply_safe_fixes
 from agents.curriculum_research.state import CurriculumState
 from agents.curriculum_research.validation import rebalance_hours
 from agents.text_utils import normalize_for_matching
@@ -146,6 +147,9 @@ def _renumber(items: list[Any], prefix: str) -> dict[str, str]:
 # "M2 - ...", "الوحدة 3: ..."). Never content: the ids carry the numbering.
 _LABEL_PREFIX = re.compile(r"^\s*(?:(?:module|unit|lesson|section|m)\s*\d+|(?:ال)?(?:وحدة|وحده)\s*\d+)\s*[:：\-–—.)]\s*",
                            re.IGNORECASE)
+# The same for learning outcomes ("LO1: Analyse ...", "Outcome 2 - ...", "المخرج 3: ...").
+_OUTCOME_LABEL_PREFIX = re.compile(r"^\s*(?:(?:learning\s+)?(?:outcome|lo)\s*-?\s*\d+|(?:ال)?مخرج\s*\d+)\s*[:：\-–—.)]\s*",
+                                   re.IGNORECASE)
 
 
 def _strip_label(text: str) -> str:
@@ -158,6 +162,9 @@ def _clean_outline(outline: CurriculumOutline, level: Optional[str], hours: int)
         setattr(outline, field, _strip_label(getattr(outline, field)))
     for module in outline.modules:
         module.title = _strip_label(module.title)
+    for outcome in outline.learning_outcomes:
+        stripped = _OUTCOME_LABEL_PREFIX.sub("", outcome.statement or "", count=1)
+        outcome.statement = stripped if stripped.strip() else outcome.statement
     outline.learning_outcomes = [o for o in outline.learning_outcomes if o.statement.strip()]
     outline.modules = [m for m in outline.modules if m.title.strip()]
     if not outline.modules:
@@ -174,11 +181,32 @@ def _clean_outline(outline: CurriculumOutline, level: Optional[str], hours: int)
     return {**outcome_map, **{f"module:{k}": v for k, v in module_map.items()}}
 
 
+def _canonical_ref(ref: Any, known: set[str]) -> Optional[str]:
+    """
+    The known outcome id a model reference means. A small model writes
+    "LO 1", "lo-1", "Outcome 1" or just "1" for LO1; only an exact form of
+    an existing id is accepted, anything else is None (never guessed).
+    """
+    text = str(ref or "").strip()
+    if text in known:
+        return text
+    compact = re.sub(r"[\s_\-.:]", "", text).upper()
+    compact = re.sub(r"^(?:LEARNINGOUTCOME|OUTCOME)", "LO", compact)
+    compact = f"LO{compact}" if compact.isdigit() else compact
+    compact = re.sub(r"^LO0*(\d+)$", r"LO\1", compact)
+    return compact if compact in known else None
+
+
 def _map_refs(refs: list[str], mapping: dict[str, str], known: set[str]) -> list[str]:
+    """
+    Model references -> existing outcome ids. The later steps were shown the
+    renumbered ids, so those are tried first; the old->new mapping only
+    covers a model echoing an id from its own outline. Unknown refs drop out.
+    """
     out = []
     for ref in refs:
-        ref = mapping.get(ref, ref)
-        if ref in known and ref not in out:
+        ref = _canonical_ref(ref, known) or _canonical_ref(mapping.get(str(ref).strip()), known)
+        if ref and ref not in out:
             out.append(ref)
     return out
 
@@ -498,8 +526,13 @@ def build_graph(tools: Any, llm: Any):
         if extras.capstone and extras.capstone_omitted_reason:
             extras.capstone_omitted_reason = None
 
+        # Joined without re-checking the step schemas: a link list emptied above
+        # (the model cited no existing outcome) must reach validation and the
+        # repair steps as a reported problem, not abort the request.
+        joined = CurriculumDetails.model_construct(
+            modules=details, **{name: getattr(extras, name) for name in CurriculumExtras.model_fields})
         draft = assemble_curriculum(
-            outline, CurriculumDetails(modules=details, **extras.model_dump()),
+            outline, joined,
             language=language, total_hours=hours, sources=state.get("sources") or [],
             academy_evidence=state.get("academy_evidence") or [], data_notice=_data_notice(state, language),
             extra_assumptions=_assumptions(state, language))
@@ -608,7 +641,13 @@ def build_graph(tools: Any, llm: Any):
         ids = {o.get("id") for o in draft.get("learning_outcomes") or []}
         for part in [*modules, *draft.get("assessments", []),
                      *([draft["capstone"]] if isinstance(draft.get("capstone"), dict) else [])]:
-            part["outcome_ids"] = [r for r in part.get("outcome_ids") or [] if r in ids]
+            part["outcome_ids"] = _map_refs(part.get("outcome_ids") or [], {}, ids)
+        # A small model's repair pass often leaves a vague verb or an unlinked outcome
+        # ("LO8 is not developed by any module"); those have one safe, explainable fix.
+        safe_notes = apply_safe_fixes(draft)
+        if safe_notes:
+            repairs.append(_t(state["language"], "Safe automatic fixes: ", "إصلاحات تلقائية آمنة: ")
+                           + " ".join(safe_notes))
         return {"draft": draft, "repairs": repairs, "repair_attempts": state.get("repair_attempts", 0) + 1}
 
     def _apply_patch(draft: dict[str, Any], patch: RepairPatch) -> None:
@@ -617,7 +656,7 @@ def build_graph(tools: Any, llm: Any):
             by_id = {o.id: o.statement for o in patch.learning_outcomes if o.statement.strip()}
             for outcome in draft["learning_outcomes"]:
                 outcome["statement"] = by_id.get(outcome["id"], outcome["statement"])
-        links = {link.module_id: [r for r in link.outcome_ids if r in known_ids] for link in patch.module_links}
+        links = {link.module_id: _map_refs(link.outcome_ids, {}, known_ids) for link in patch.module_links}
         for module in draft["modules"]:
             if links.get(module["id"]):
                 module["outcome_ids"] = links[module["id"]]
@@ -653,14 +692,9 @@ def build_graph(tools: Any, llm: Any):
         return {"saved": saved, "validation": saved["validation"]}
 
     def after_save(state: CurriculumState) -> str:
-        return "render_pdf" if state.get("saved") else "finish"
-
-    def render_pdf(state: CurriculumState) -> dict[str, Any]:
-        saved = state["saved"]
-        result = call("render_curriculum_pdf", curriculum_id=saved["curriculum_id"], version=saved["version"])
-        if _ok(result):
-            return {"document": result["document"], "document_status": "ok"}
-        return {"document": None, "document_status": result.get("message") or result.get("status")}
+        # No PDF here: a curriculum PDF is the approved final document, rendered only once an
+        # administrator approves that exact version (AdminService.approve_curriculum).
+        return "curriculum_reply" if state.get("saved") else "finish"
 
     def curriculum_reply(state: CurriculumState) -> dict[str, Any]:
         saved, draft, language = state["saved"], state["draft"], state["language"]
@@ -751,7 +785,7 @@ def build_graph(tools: Any, llm: Any):
                     revised = json.loads(json.dumps(revised))
                     known = {o["id"] for o in revised["learning_outcomes"]}
                     revised["capstone"] = {**capstone.model_dump(),
-                                           "outcome_ids": [r for r in capstone.outcome_ids if r in known]}
+                                           "outcome_ids": _map_refs(capstone.outcome_ids, {}, known)}
                     revised["capstone_omitted_reason"] = None
                     summaries.append("Capstone project added.")
             if hours_change is not None and not any(c["kind"] == "add_module" for c in changes):
@@ -875,13 +909,12 @@ def build_graph(tools: Any, llm: Any):
         if not _ok(loaded):
             return _error_reply(state, loaded)
         record = loaded["curriculum"]
-        documents = [d for d in loaded.get("documents") or [] if d.get("version") == record["version"]]
+        approved = record.get("version_status") == "approved"
+        documents = [d for d in loaded.get("documents") or [] if d.get("version") == record["version"]] if approved else []
         message = _curriculum_message(record["content"], record["curriculum_id"], record["version"], record["status"],
                                       record.get("validation") or {"valid": True, "errors": []}, language,
                                       header=_t(language, "Stored curriculum", "المنهج المحفوظ"),
-                                      document=documents[-1] if documents else None,
-                                      document_status="ok" if documents else _t(language, "not rendered",
-                                                                               "لم يُنشأ بعد"))
+                                      document=documents[-1] if documents else None)
         memory_out = dict(memory)
         memory_out.update({"active_curriculum_id": record["curriculum_id"], "active_version": record["version"],
                            "active_language": record["content"].get("language"),
@@ -1010,7 +1043,7 @@ def build_graph(tools: Any, llm: Any):
     graph = StateGraph(CurriculumState)
     for name, node in (("understand", understand), ("academy_context", academy_context), ("clarify", clarify),
                        ("research", research), ("generate", generate), ("validate", validate), ("repair", repair),
-                       ("save", save), ("render_pdf", render_pdf), ("curriculum_reply", curriculum_reply),
+                       ("save", save), ("curriculum_reply", curriculum_reply),
                        ("revise", revise), ("suggest", suggest), ("show", show), ("align", align),
                        ("attach_alignment", attach_alignment), ("simple_reply", simple_reply), ("finish", finish)):
         graph.add_node(name, guarded(node))
@@ -1026,8 +1059,7 @@ def build_graph(tools: Any, llm: Any):
     graph.add_edge("attach_alignment", "save")
     graph.add_conditional_edges("align", after_align, {"validate": "validate", "finish": "finish"})
     graph.add_edge("repair", "validate")
-    graph.add_conditional_edges("save", after_save, {"render_pdf": "render_pdf", "finish": "finish"})
-    graph.add_edge("render_pdf", "curriculum_reply")
+    graph.add_conditional_edges("save", after_save, {"curriculum_reply": "curriculum_reply", "finish": "finish"})
     graph.add_conditional_edges("revise", after_revise, {"generate": "generate", "validate": "validate",
                                                          "finish": "finish"})
     for terminal in ("clarify", "curriculum_reply", "suggest", "show", "simple_reply", "finish"):
@@ -1101,6 +1133,9 @@ def _curriculum_message(curriculum: dict[str, Any], curriculum_id: str, version:
                         f"ملف PDF: {document.get('filename')} ({document.get('pages')} صفحات)."))
     elif document_status:
         lines.append(_t(language, f"PDF: not available ({document_status}).", f"ملف PDF: غير متاح ({document_status})."))
+    else:
+        lines.append(_t(language, "PDF: generated after an administrator approves this version.",
+                        "ملف PDF: يُنشأ بعد أن يعتمد المسؤول هذه النسخة."))
     lines.append(_t(language, "Approval: only an administrator can approve it, in the Curricula tab.",
                     "الاعتماد: يعتمده المسؤول فقط من تبويب «المناهج»."))
     return "\n".join(lines)

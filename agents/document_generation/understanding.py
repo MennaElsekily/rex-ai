@@ -99,6 +99,23 @@ def find_language(text: str) -> Optional[str]:
     return None
 
 
+def curriculum_from_previous_results(previous_results: Any) -> Optional[str]:
+    """
+    The curriculum id Agent 3 just drafted earlier in this same chained
+    request ("create a curriculum ... and generate a document"), if any
+    -- read before falling back to matching free text against the
+    approved curricula, since a curriculum just drafted is never
+    approved yet and so can never be found there.
+    """
+    for result in previous_results or []:
+        if not (isinstance(result, dict) and result.get("agent_name") == "curriculum_research"):
+            continue
+        body = result.get("result")
+        if isinstance(body, dict) and body.get("kind") == "curriculum" and body.get("curriculum_id"):
+            return body["curriculum_id"]
+    return None
+
+
 def choose_from_options(text: str, option_ids: list[str]) -> Optional[str]:
     """A reply such as "2" or "number 2" picks the n-th curriculum offered."""
     match = re.fullmatch(r"\s*(?:number\s*|no\.?\s*|#)?(\d{1,2})\s*[.)]?\s*", normalize_for_matching(text))

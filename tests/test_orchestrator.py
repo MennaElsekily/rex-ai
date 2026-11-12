@@ -48,6 +48,29 @@ def test_multi_agent_workflow():
     assert response["result"][1]["agent_name"] == "marketing"
 
 
+def test_three_agent_workflow_runs_in_curriculum_document_marketing_order():
+    """
+    The brief's "create a curriculum, generate its document, and prepare
+    a marketing campaign" workflow: a bare "generate its PDF" names
+    Agent 3's own curriculum PDF, not a Agent-4 document, so the request
+    must name an actual document type to involve all three agents.
+    """
+    router = Orchestrator()
+    router.register_agent("curriculum_research", mock_agent)
+    router.register_agent("document_generation", mock_agent)
+    router.register_agent("marketing", mock_agent)
+
+    response = router.handle_request(
+        "Create a digital marketing curriculum, generate a course description document for it, "
+        "and prepare a marketing campaign for it.",
+        request_id="test-006",
+    )
+
+    assert response["status"] == "success"
+    assert [r["agent_name"] for r in response["result"]] == [
+        "curriculum_research", "document_generation", "marketing"]
+
+
 def test_missing_agent_returns_error():
     router = Orchestrator()
 

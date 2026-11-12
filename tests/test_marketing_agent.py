@@ -409,7 +409,10 @@ def test_a_failing_channel_is_repaired_once_with_the_exact_problems(toolbox):
 
 def test_a_channel_that_still_fails_after_the_repair_saves_nothing_and_names_the_content_type(toolbox):
     cid = approved_course(toolbox)
-    llm = fake_llm(WhatsAppSet=[BAD_WHATSAPP, BAD_WHATSAPP])
+    # The model keeps writing the same bad message: its repair, and then the one rewrite of only the failing variation
+    # (2026-11-12, generator._replace_failing_variations), both fail the unchanged checks.
+    one_bad = {"variations": BAD_WHATSAPP["variations"][:1]}
+    llm = fake_llm(WhatsAppSet=[BAD_WHATSAPP, BAD_WHATSAPP, one_bad])
 
     response = make_campaign(toolbox, cid, llm=llm)
 
@@ -417,7 +420,7 @@ def test_a_channel_that_still_fails_after_the_repair_saves_nothing_and_names_the
     assert response["status"] == "error" and result["kind"] == "validation_failed" and result["failed_content"] == "whatsapp"
     assert "WhatsApp promotional messages did not pass the checks, even after one repair attempt" in response["error_message"]
     assert "Nothing was saved" in response["error_message"] and toolbox.store.list() == []
-    assert llm.steps().count("WhatsAppSet") == 2                                          # one repair, never a third attempt
+    assert llm.steps().count("WhatsAppSet") == 3          # one repair, one rewrite of the failing variation, never more
     assert "HeadlineSet" not in llm.steps() and "CtaSet" not in llm.steps()               # the rest was not written
 
 
@@ -433,10 +436,17 @@ def test_a_failing_strategy_is_named_and_saves_nothing(toolbox):
 def test_the_wrong_number_of_variations_is_repaired_then_refused(toolbox):
     cid = approved_course(toolbox)
     one = {"variations": TEXTS["en"]["headlines"][:1]}
-    repaired = make_campaign(toolbox, cid, llm=fake_llm(HeadlineSet=[one, channel_answer("headlines")]), channels=["headlines"])
+    three = {"variations": TEXTS["en"]["headlines"][:3]}
+    # Too few: the missing one is asked for; here it repeats the first, so the set fails and the repair rewrites it.
+    repaired = make_campaign(toolbox, cid, llm=fake_llm(HeadlineSet=[one, one, channel_answer("headlines")]), channels=["headlines"])
     assert repaired["status"] == "success"
-    failed = make_campaign(toolbox, cid, llm=fake_llm(HeadlineSet=[one, one]), channels=["headlines"])
+    # Too many, twice: refused on the count.
+    failed = make_campaign(toolbox, cid, llm=fake_llm(HeadlineSet=[three, three]), channels=["headlines"])
     assert failed["result"]["kind"] == "validation_failed" and "exactly 2" in failed["error_message"]
+    # Too few even when asked for the missing ones (it repeats itself): refused.
+    stuck = make_campaign(toolbox, cid, llm=fake_llm(HeadlineSet=[one] * 4), channels=["headlines"])
+    assert stuck["status"] == "error" and stuck["result"]["kind"] == "validation_failed"
+    assert len(toolbox.store.list()) == 1                                    # only the repaired campaign was saved
 
 
 def test_a_model_failure_saves_nothing(toolbox):
@@ -630,3 +640,85 @@ def test_the_cta_limits_and_the_other_checks_are_unchanged(toolbox):
     codes_found = {p["code"] for p in response["result"]["problems"]}
     assert {"price_claim", "certificate_claim", "date_claim"} <= codes_found
     assert schemas.LIMITS["ctas"]["text"] == (3, 60) and schemas.MAX_CTA_WORDS == 8
+
+
+# Real-model run (2026-11-11): asked for 2 e-mails, the local model wrote one long e-mail, three times out of three,
+# so every default campaign (2 variations) failed at the e-mail step. The missing ones are now asked for separately.
+def test_too_few_variations_are_completed_and_the_whole_set_is_still_checked(toolbox):
+    cid = approved_course(toolbox)
+    emails = TEXTS["en"]["email"]
+    llm = fake_llm(EmailSet=[{"variations": emails[:1]}, {"variations": emails[1:2]}])
+
+    response = make_campaign(toolbox, cid, llm=llm, channels=["email"], variations=2)
+
+    assert response["status"] == "success"
+    saved = stored(toolbox, response["result"])["content"]["channels"]["email"]["variations"]
+    assert [v["subject"] for v in saved] == [emails[0]["subject"], emails[1]["subject"]]
+    first, top_up = llm.prompts("EmailSet")
+    assert "Write exactly 2 variation(s)" in first
+    assert "Write exactly 1 variation(s)" in top_up and emails[0]["subject"] in top_up and "do not repeat them" in top_up
+
+
+def test_a_completed_set_that_repeats_itself_still_fails_the_checks(toolbox):
+    cid = approved_course(toolbox)
+    one = {"variations": TEXTS["en"]["email"][:1]}
+    llm = fake_llm(EmailSet=[one, one, one, one, one])   # the model keeps writing the same e-mail
+
+    response = make_campaign(toolbox, cid, llm=llm, channels=["email"], variations=2)
+
+    assert response["status"] == "error" and response["result"]["kind"] == "validation_failed"
+    # write + top-up, one repair + top-up, then one rewrite of the variation that repeats the other
+    assert toolbox.store.list() == [] and llm.steps().count("EmailSet") == 5
+
+
+
+def test_only_the_failing_variation_is_written_again_and_the_good_one_is_kept(toolbox):
+    # Real model (2026-11-12): a claim in a one-line e-mail subject ("no experience") or two variations too alike, after
+    # the repair; one variation was fine. Only the failing one is written again, shown the good one.
+    cid = approved_course(toolbox)
+    emails = TEXTS["en"]["email"]
+    claim = dict(emails[1], subject="Start today, no experience needed")
+    llm = fake_llm(EmailSet=[{"variations": [emails[0], claim]}, {"variations": [emails[0], claim]},
+                             {"variations": [emails[2]]}])
+
+    response = make_campaign(toolbox, cid, llm=llm, channels=["email"], variations=2)
+
+    assert response["status"] == "success", response.get("error_message")
+    saved = toolbox.store.get(response["result"]["campaign_id"])["content"]["channels"]["email"]["variations"]
+    assert [v["subject"] for v in saved] == [emails[0]["subject"], emails[2]["subject"]]
+    rewrite = llm.prompts("EmailSet")[2]
+    assert "Write exactly 1 variation(s)" in rewrite and emails[0]["subject"] in rewrite and "do not repeat them" in rewrite
+
+
+def test_no_rewrite_is_tried_when_every_variation_fails(toolbox):
+    cid = approved_course(toolbox)
+    llm = fake_llm(WhatsAppSet=[{"variations": [BAD_WHATSAPP["variations"][0]] * 2}] * 3)
+
+    response = make_campaign(toolbox, cid, llm=llm, channels=["whatsapp"], variations=2)
+
+    assert response["status"] == "error" and llm.steps().count("WhatsAppSet") == 2   # nothing good to build on
+
+
+def test_a_channel_the_model_fails_on_is_written_one_variation_at_a_time(toolbox):
+    # Real model (2026-11-12): two Arabic ad copies in one answer made it loop until Ollama aborted, on the retry too.
+    cid = approved_course(toolbox)
+    ads = TEXTS["en"]["ad_copy"]
+    loop = RuntimeError("prediction aborted, token repeat limit reached")
+    llm = fake_llm(AdCopySet=[loop, loop, {"variations": ads[:1]}, {"variations": ads[1:2]}])
+
+    response = make_campaign(toolbox, cid, llm=llm, channels=["ad_copy"], variations=2)
+
+    assert response["status"] == "success", response.get("error_message")
+    prompts_ = llm.prompts("AdCopySet")
+    assert "Write exactly 1 variation(s)" in prompts_[2] and "Write exactly 1 variation(s)" in prompts_[3]
+    assert ads[0]["headline"] in prompts_[3] and "do not repeat them" in prompts_[3]       # the second takes another angle
+
+
+def test_a_model_that_keeps_failing_is_still_reported_and_saves_nothing(toolbox):
+    cid = approved_course(toolbox)
+    llm = fake_llm(AdCopySet=[RuntimeError("ollama is down")] * 6)
+
+    response = make_campaign(toolbox, cid, llm=llm, channels=["ad_copy"], variations=2)
+
+    assert response["result"]["kind"] == "generation_failed" and "Nothing was saved" in response["error_message"]
+    assert toolbox.store.list() == []

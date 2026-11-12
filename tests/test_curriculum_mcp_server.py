@@ -17,7 +17,7 @@ from tests.curriculum_fixtures import FRAMEWORK, build_test_index, valid_curricu
 TOOLS = {"list_academy_courses", "get_course_details", "check_course_overlap", "catalogue_gap_report",
          "search_curriculum_sources", "list_frameworks", "get_framework_requirements", "validate_curriculum",
          "compare_with_framework", "save_curriculum_draft", "get_curriculum", "list_curricula",
-         "render_curriculum_pdf"}
+         "render_curriculum_pdf", "link_curriculum_translation", "get_curriculum_translation"}
 
 
 @pytest.fixture(scope="module")

@@ -21,6 +21,7 @@ from agents.rfp_research.api_clients.tavily import WebPage, WebSearchResult
 from tests.curriculum_fakes import (
     FakeLLM,
     NoModel,
+    bilingual_answers,
     canned_answers,
     details_answer,
     extras_answer,
@@ -60,7 +61,7 @@ def stored(tools, curriculum_id, version=None):
 # --------------------------------------------------------------------
 
 def test_english_request_generates_validates_and_saves_for_review(tools, conversations):
-    agent, fake = make_agent(tools, conversations, canned_answers())
+    agent, fake = make_agent(tools, conversations, bilingual_answers())
 
     response = ask(agent, "Create an intermediate curriculum about cloud computing for IT staff, 40 hours")
 
@@ -72,8 +73,12 @@ def test_english_request_generates_validates_and_saves_for_review(tools, convers
     content = record["content"]
     assert content["language"] == "en" and content["total_hours"] == 40 and content["level"] == "Intermediate"
     assert sum(m["hours"] for m in content["modules"]) == 40
-    # Three bounded structured calls; the prompts carry the request's values.
-    assert fake.steps() == ["CurriculumOutline", "ModuleDetailList", "CurriculumExtras"]
+    # Three bounded structured calls for the English draft, then the bilingual companion's (chunked) translation.
+    assert fake.steps()[:3] == ["CurriculumOutline", "ModuleDetailList", "CurriculumExtras"]
+    assert fake.steps()[3:] and set(fake.steps()[3:]) == {"TranslationBatch"}
+    assert result["bilingual_companion_id"]
+    companion = stored(tools, result["bilingual_companion_id"])
+    assert companion["content"]["language"] == "ar"
     outline_prompt = fake.prompts("CurriculumOutline")[0]
     assert "Total hours: 40" in outline_prompt and "Intermediate" in outline_prompt
     assert "Write every text value in English" in outline_prompt
@@ -169,7 +174,8 @@ def test_unmeasurable_outcomes_are_repaired_once(tools, conversations):
 
 def test_a_curriculum_still_invalid_after_one_repair_is_saved_as_a_draft(tools, conversations):
     outline = outline_answer()
-    outline["learning_outcomes"][0]["statement"] = "Know the cloud"
+    # No verb at all: nothing safe_repair.py could fix ("Know the cloud" now is -- see the next test).
+    outline["learning_outcomes"][0]["statement"] = "The cloud and its many uses"
     agent, fake = make_agent(tools, conversations, canned_answers(CurriculumOutline=outline,
                                                                   RepairPatch={"learning_outcomes": []}))
 
@@ -179,6 +185,92 @@ def test_a_curriculum_still_invalid_after_one_repair_is_saved_as_a_draft(tools, 
     assert fake.steps().count("RepairPatch") == 1  # bounded: one repair pass only
     assert result["review_status"] == "draft" and not result["validation"]["valid"]
     assert "saved as a draft" in result["message"] and "LO1" in result["message"]
+
+
+def test_a_vague_outcome_verb_the_model_did_not_fix_is_safely_fixed_and_explained(tools, conversations):
+    outline = outline_answer()
+    outline["learning_outcomes"][0]["statement"] = "Know the cloud service models"
+    agent, fake = make_agent(tools, conversations, canned_answers(CurriculumOutline=outline,
+                                                                  RepairPatch={"learning_outcomes": []}))
+
+    response = ask(agent, "Create a beginner curriculum about cloud computing, 40 hours")
+
+    result = response["result"]
+    assert fake.steps().count("RepairPatch") == 1
+    assert result["review_status"] == "pending_review" and result["validation"]["valid"]
+    content = stored(tools, result["curriculum_id"])["content"]
+    assert content["learning_outcomes"][0]["statement"] == "Identify the cloud service models"
+    assert 'the vague verb "know" was replaced with "identify"' in result["message"]
+
+
+def test_links_to_no_existing_outcome_are_a_reported_problem_not_a_crash(tools, conversations):
+    # Seen in the live app: every assessment and the capstone cited outcomes that do not
+    # exist, and rebuilding the details raised a pydantic ValidationError ("outcome_ids
+    # List should have at least 1 item") that ended the whole request.
+    extras = extras_answer()
+    extras["assessments"][0]["outcome_ids"] = ["LO9"]
+    extras["capstone"]["outcome_ids"] = ["LO8", "X1"]
+    details = details_answer()
+    details["modules"][0]["outcome_ids"] = ["LO7"]
+    agent, fake = make_agent(tools, conversations, canned_answers(CurriculumExtras=extras, ModuleDetailList=details,
+                                                                  RepairPatch={"learning_outcomes": []}))
+
+    response = ask(agent, "Create a beginner curriculum about cloud computing, 40 hours")
+
+    assert response["status"] == "success", response.get("error_message")
+    result = response["result"]
+    assert stored(tools, result["curriculum_id"]) is not None
+    repair_prompt = fake.prompts("RepairPatch")[0]
+    assert "A1 assesses no outcome" in repair_prompt and "capstone demonstrates no outcome" in repair_prompt
+    record = stored(tools, result["curriculum_id"])
+    # Still validated by the unchanged rules: the status follows the final result.
+    assert record["status"] == ("pending_review" if record["validation"]["valid"] else "draft")
+
+
+def test_near_miss_outcome_ids_from_the_model_are_read_as_the_existing_ids(tools, conversations):
+    details = details_answer()
+    for module, refs in zip(details["modules"], (["LO 1"], ["lo-2"], ["Outcome 3"])):
+        module["outcome_ids"] = refs
+    extras = extras_answer()
+    extras["assessments"][0]["outcome_ids"] = ["1", "2", "3"]
+    extras["capstone"]["outcome_ids"] = ["LO02", "LO3"]
+    agent, fake = make_agent(tools, conversations, canned_answers(ModuleDetailList=details, CurriculumExtras=extras))
+
+    response = ask(agent, "Create a beginner curriculum about cloud computing, 40 hours")
+
+    result = response["result"]
+    assert "RepairPatch" not in fake.steps()
+    assert result["review_status"] == "pending_review"
+    content = stored(tools, result["curriculum_id"])["content"]
+    assert [m["outcome_ids"] for m in content["modules"]] == [["LO1"], ["LO2"], ["LO3"]]
+    assert content["assessments"][0]["outcome_ids"] == ["LO1", "LO2", "LO3"]
+    assert content["capstone"]["outcome_ids"] == ["LO2", "LO3"]
+
+
+def test_an_id_label_in_front_of_an_outcome_statement_is_removed(tools, conversations):
+    # Seen with qwen2.5:3b: "LO1: Analyze ..." made validation read the verb as "lo".
+    outline = outline_answer()
+    for outcome, label in zip(outline["learning_outcomes"], ("LO1: ", "Outcome 2 - ", "LO3. ")):
+        outcome["statement"] = label + outcome["statement"]
+    agent, _ = make_agent(tools, conversations, canned_answers(CurriculumOutline=outline))
+
+    response = ask(agent, "Create a beginner curriculum about cloud computing, 40 hours")
+
+    assert response["result"]["review_status"] == "pending_review"
+    statements = [o["statement"] for o in stored(tools, response["result"]["curriculum_id"])["content"]["learning_outcomes"]]
+    assert statements == ["Compare cloud service models", "Deploy a virtual server", "Apply basic cloud security controls"]
+
+
+def test_outcome_references_are_never_guessed():
+    from agents.curriculum_research.graph import _canonical_ref, _map_refs
+
+    known = {"LO1", "LO2"}
+    assert [_canonical_ref(r, known) for r in ("LO1", " lo 2 ", "Learning Outcome 1", "2", "LO01")] == \
+        ["LO1", "LO2", "LO1", "LO2", "LO1"]
+    assert [_canonical_ref(r, known) for r in ("LO3", "M1", "Module 1", "A1", "", None, "Compare models")] == \
+        [None] * 7
+    # Ids shown to the model win over the outline's old->new renumbering.
+    assert _map_refs(["LO2", "LO1", "lo1"], {"LO2": "LO1"}, known) == ["LO2", "LO1"]
 
 
 def test_wrong_module_hours_are_rescaled_without_changing_the_requested_total(tools, conversations):
@@ -638,3 +730,16 @@ def test_numbering_labels_written_by_the_model_are_removed(tools, conversations)
     content = stored(tools, response["result"]["curriculum_id"])["content"]
     assert content["title"] == "أساسيات الحوسبة السحابية" and content["target_audience"] == "موظفو تقنية المعلومات"
     assert content["modules"][1]["title"] == "الخوادم الافتراضية"
+
+
+def test_an_admins_misspelled_request_with_that_is_and_medium_level_is_understood():
+    # Typed in the real app: the agent answered with its help text.
+    from agents.curriculum_research import understanding
+
+    text = "i need to make a new curriculam that is backend that is 70 hours and medium level"
+    slots = understanding.request_slots(text)
+
+    assert understanding.is_creation_request(text)
+    assert (slots["topic"], slots["total_hours"], slots["level"]) == ("backend", 70, "Intermediate")
+    assert understanding.is_creation_request("make a new curiculum about backend development, 40 hours")
+    assert not understanding.is_creation_request("i need to create new one")    # no subject: the agent asks

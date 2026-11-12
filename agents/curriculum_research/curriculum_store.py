@@ -129,6 +129,12 @@ class CurriculumStore:
                     notes TEXT,
                     at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS curriculum_translations (
+                    first_id TEXT NOT NULL,
+                    second_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (first_id, second_id)
+                );
                 """
             )
             self._connection.commit()
@@ -355,6 +361,35 @@ class CurriculumStore:
                 "SELECT * FROM curriculum_documents WHERE curriculum_id = ? ORDER BY created_at", (curriculum_id,))
             columns = [d[0] for d in cursor.description]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    # ------------------------------------------------------- bilingual pair
+
+    def link_translation(self, first_id: str, second_id: str) -> None:
+        """
+        Records that two curricula are the same curriculum in different
+        languages (see agents/curriculum_research/bilingual.py). Order
+        does not matter for lookups (translation_of checks both ways);
+        storing the pair the way it is first linked is enough.
+        """
+        check_curriculum_id(first_id)
+        check_curriculum_id(second_id)
+        with write_transaction(self._connection, self._lock, CurriculumStoreError):
+            self._connection.execute(
+                "INSERT OR IGNORE INTO curriculum_translations (first_id, second_id, created_at) "
+                "VALUES (?, ?, ?)", (first_id, second_id, _now()))
+
+    def translation_of(self, curriculum_id: str) -> Optional[str]:
+        """The sibling curriculum id in the other language, if this one has a bilingual companion."""
+        check_curriculum_id(curriculum_id)
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT first_id, second_id FROM curriculum_translations WHERE first_id = ? OR second_id = ?",
+                (curriculum_id, curriculum_id),
+            ).fetchone()
+        if row is None:
+            return None
+        first_id, second_id = row
+        return second_id if first_id == curriculum_id else first_id
 
     def close(self) -> None:
         with self._lock:

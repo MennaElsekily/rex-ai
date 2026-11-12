@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,14 @@ from knowledge_base.vector_store import VectorStore
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_DOCUMENTS_DIR = PROJECT_ROOT / "knowledge_base" / "documents"
+# The academy documents a deployment ingests: this setting when given.
+DOCUMENTS_SETTING = "REX_DOCUMENTS_DIR"
+
+
+def configured_documents_dir() -> Path:
+    return Path(os.environ.get(DOCUMENTS_SETTING, "").strip() or DEFAULT_DOCUMENTS_DIR)
+
+
 DEFAULT_METADATA_PATH = (
     PROJECT_ROOT / "knowledge_base" / "metadata" / "chunk_metadata.json"
 )
@@ -336,8 +345,10 @@ def main(argv: list[str] | None = None) -> int:
     Safe to repeat: see ingest_directory().
     """
     parser = argparse.ArgumentParser(description="Ingest documents into the REX knowledge base.")
-    parser.add_argument("--dir", default=str(DEFAULT_DOCUMENTS_DIR), help="document directory")
-    parser.add_argument("--store", default=None, help="vector store directory (default: knowledge_base/vector_db)")
+    parser.add_argument("--dir", default=str(configured_documents_dir()),
+                        help="document directory (default: REX_DOCUMENTS_DIR, else knowledge_base/documents)")
+    parser.add_argument("--store", default=None,
+                        help="vector store directory (default: REX_VECTOR_DB_DIR, else knowledge_base/vector_db)")
     parser.add_argument("--strategy", default=STRATEGY_AUTO, choices=CHUNK_STRATEGIES)
     parser.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS)
     args = parser.parse_args(argv)

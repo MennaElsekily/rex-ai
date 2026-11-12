@@ -1,0 +1,9 @@
+# One calm, consistent look for every page: a white background, one accent colour.
+[theme]
+base = "light"
+primaryColor = "#3b5bdb"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f5f6f8"
+textColor = "#1f2937"
+font = "sans serif"
+borderColor = "#e5e7eb"

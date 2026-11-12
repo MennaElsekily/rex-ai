@@ -126,7 +126,7 @@ def test_the_curricula_tab_shows_a_new_version_after_a_revision(env):
     store = CurriculumStore()   # the temporary default path set in tests/conftest.py
     saved = store.save_version(valid_curriculum(), {"valid": True, "errors": []}, [])
     curriculum_id = saved["curriculum_id"]
-    at = unlock(start())
+    at = unlock(start(), section="curricula")
     assert next(s for s in at.selectbox if s.key == f"cur_version_{curriculum_id}_1").value == 1
 
     revised = valid_curriculum()

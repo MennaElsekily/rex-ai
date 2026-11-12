@@ -108,6 +108,7 @@ class DocumentAgent:
         try:
             state = self.graph.invoke({"request_text": text, "request_id": request_id, "ui_language": ui,
                                        "form": form or {}, "memory": memory,
+                                       "previous_results": list(context.get("previous_results") or []),
                                        "progress": progress if callable(progress) else None})
         except Exception as exc:  # tool server down, unexpected failure: an answer, never a crash
             logger.exception("Document workflow failed")

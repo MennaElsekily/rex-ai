@@ -116,6 +116,9 @@ class Retriever:
             raise ValueError("retrieval_query cannot be empty")
 
         query_embedding = embed_texts([retrieval_query])[0]
+        # What was actually embedded, reported with the evidence (trace).
+        self.last_query = {"embedded_text": retrieval_query, "embedding_model": DEFAULT_MODEL_NAME,
+                           "embedding_dimensions": len(query_embedding)}
 
         candidates = self.vector_store.search(
             query_embedding,

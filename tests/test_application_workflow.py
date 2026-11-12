@@ -176,7 +176,11 @@ def test_missing_profile_documents_and_authorisation_are_listed(admin, token, st
     assert run["missing"] == ["Legal name", "Contact person", "Contact email",
                               "Document: Company profile",
                               "Your authorisation to submit on the academy's behalf (the checkbox when approving)"]
-    assert run["confirmation"] == {}  # nothing was prepared
+    # A draft is still prepared for review, with nothing invented for the missing details.
+    email = run["confirmation"]["prepared_email"]
+    assert email["body"].startswith("Dear Sir or Madam,\n\nWe wish to express our interest in ")
+    assert email["from"] == "" and email["attachments"] == [] and "Our details" not in email["body"]
+    assert email["body"].endswith("Kind regards,")
 
 
 def test_a_complete_profile_gives_a_prepared_email_that_is_never_sent(admin, token, store, profile):
@@ -321,3 +325,58 @@ def test_no_tender_tool_can_start_an_application():
 
     source = Path(tender_mcp_server.__file__).read_text(encoding="utf-8")
     assert "applications" not in source and "claim_submission" not in source and "decide(" not in source
+
+
+# --------------------------------------------------------------------
+# A personalised draft for every approved tender, tailored to the notice
+# --------------------------------------------------------------------
+
+def _rich_profile(profile):
+    complete_profile(profile)
+    profile.update_fields({
+        "overview": "Andalusia Academy is a Cairo-based professional training provider.",
+        "services": "We design teacher training programmes for public schools. We also run cybersecurity bootcamps.",
+        "experience": "Trained 1,200 teachers for a regional education directorate in 2023.",
+        "qualifications": "ISO 9001 certified quality management.",
+    }, "admin-session-test")
+
+
+def test_every_approved_tender_gets_a_prepared_email_draft(admin, token, store, profile):
+    _rich_profile(profile)
+    for tender in (ETIMAD, WB_EOI):
+        opp_id = add(store, tender)
+        run = admin.decide(token, opp_id, "approved", authorize_submission=True)["application"]
+        email = run["confirmation"]["prepared_email"]
+        assert run["dry_run"] in (True, False) and email["subject"].startswith("Expression of Interest")
+        assert "Andalusia Academy LLC" in email["body"]
+
+
+def test_the_draft_quotes_the_profile_sentences_relevant_to_this_tender(admin, token, store, profile):
+    _rich_profile(profile)
+    opp_id = add(store, WB_EOI)   # "Consultancy for Teacher Training Programme"
+
+    email = admin.decide(token, opp_id, "approved", authorize_submission=True)["application"]["confirmation"][
+        "prepared_email"]
+
+    relevant = email["body"].split("How our work relates to this notice:\n", 1)[1].split("\n\n", 1)[0]
+    assert "- We design teacher training programmes for public schools." in relevant
+    assert "- Trained 1,200 teachers for a regional education directorate in 2023." in relevant
+    assert "cybersecurity" not in relevant   # unrelated to this notice: not highlighted
+    assert email["body"].count("We design teacher training programmes") == 1   # quoted once, never repeated
+    assert "We also run cybersecurity bootcamps." in email["body"]   # still present in the general paragraph
+
+
+def test_two_different_tenders_get_different_tailored_emails(admin, token, store, profile):
+    _rich_profile(profile)
+    cyber = {**ETIMAD, "url": "https://tenders.etimad.sa/t/cyber", "title": "Cybersecurity bootcamp for staff",
+             "scope_of_work": "Deliver cybersecurity awareness bootcamps"}
+    teacher = add(store, WB_EOI)
+    other = add(store, cyber)
+
+    first = admin.decide(token, teacher, "approved", authorize_submission=True)["application"]
+    second = admin.decide(token, other, "approved", authorize_submission=True)["application"]
+
+    body_a = first["confirmation"]["prepared_email"]["body"]
+    body_b = second["confirmation"]["prepared_email"]["body"]
+    assert "- We also run cybersecurity bootcamps." in body_b and "- We also run cybersecurity bootcamps." not in body_a
+    assert body_a != body_b

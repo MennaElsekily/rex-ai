@@ -59,6 +59,21 @@ _CREATES_CURRICULUM = re.compile(
     r"|(?<!\w)(?:انشئ|صمم|اعد|اكتب|جهز|اعمل|طور)\s+(?:\S+\s+){0,2}?(?:منهج|مناهج|منهاج)")
 
 
+# "Create a 30-hour Excel for Business Analysis curriculum for beginners": a longer course name
+# before the word curriculum (used only when the clause names no document type).
+_CREATES_NAMED_CURRICULUM = re.compile(
+    r"\b(?:generate|create|make|build|design|develop|draft|write|prepare|produce|compose)\s+(?:me\s+|us\s+)?"
+    r"(?:an?\s+|the\s+)?(?:[\w-]+\s+){0,7}?(?:curriculum|curricula|syllabus)\b")
+
+# Clauses of a request, in the original wording (for handing each agent its own part).
+_CLAUSE_SPLIT = re.compile(r"\s*,?\s+(?:and then|then|and also|and|as well as)\s+|\s*[;؛]\s*|\s+ثم\s+", re.IGNORECASE)
+
+
+def split_clauses(text: str) -> list[str]:
+    """'Find tenders in Egypt and create a curriculum on SQL' -> ['Find tenders in Egypt', 'create a curriculum on SQL']."""
+    return [c.strip(" ,.") for c in _CLAUSE_SPLIT.split(text or "") if c and c.strip(" ,.")]
+
+
 def has_marketing_deliverable(clause: str) -> bool:
     """Does this clause ask for marketing content (a campaign, a post, ad copy...)? The word "marketing" alone does not."""
     return bool(_MARKETING.search(normalize_for_matching(clause)))
@@ -86,7 +101,10 @@ def deliverables(text: str, creates_course: Callable[[str], bool]) -> list[str]:
             agent = DOCUMENT
         elif has_marketing_deliverable(clause):
             agent = MARKETING
-        elif _CREATES_CURRICULUM.search(clause) or creates_course(clause):
+        elif _CREATES_CURRICULUM.search(clause) or creates_course(clause) or (
+                document_type is None and _CREATES_NAMED_CURRICULUM.search(clause)):
+            # (the longer form only without a document type: "create a 30-hour Excel for Business
+            # Analysis curriculum" is a curriculum; "a course description for the Python curriculum" is not)
             agent = CURRICULUM
         else:
             agent = None

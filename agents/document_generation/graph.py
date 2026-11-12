@@ -46,6 +46,7 @@ class DocumentState(TypedDict, total=False):
     language: str
     extra: dict[str, str]
     document_id: Optional[str]
+    previous_results: list[dict[str, Any]]   # earlier agents' results in a chained request (orchestrator.py)
     record: dict[str, Any]
     newer_version: bool
     parts: Any
@@ -90,7 +91,9 @@ def build_graph(tools: Any, llm: Any):
             language, raw_extra, document_id = form.get("language"), form.get("extra"), form.get("document_id")
         else:
             doc_type = rules.find_document_type(text) or pending.get("doc_type")
-            curriculum_id = rules.find_curriculum_id(text) or rules.choose_from_options(text, pending.get("options") or [])
+            curriculum_id = (rules.find_curriculum_id(text)
+                            or rules.choose_from_options(text, pending.get("options") or [])
+                            or rules.curriculum_from_previous_results(state.get("previous_results")))
             language = rules.find_language(text) or pending.get("language")
             raw_extra, document_id = pending.get("extra"), None
 
@@ -156,7 +159,13 @@ def build_graph(tools: Any, llm: Any):
         found = call("get_approved_curriculum", curriculum_id=state["curriculum_id"])
         outcome = found.get("status")
         if outcome in ("not_approved", "not_found", "invalid_request"):
-            return stop(state, outcome, found.get("message") or _t(ui, "The curriculum cannot be used.", "لا يمكن استخدام المنهج."))
+            # Kept so a chained request that paused here (admin_service.py's
+            # pending_workflows.py) can resume with this exact document
+            # request once the curriculum is approved, instead of
+            # re-matching free text against every approved curriculum.
+            return stop(state, outcome, found.get("message") or _t(ui, "The curriculum cannot be used.", "لا يمكن استخدام المنهج."),
+                       curriculum_id=state["curriculum_id"], document_type=state["doc_type"],
+                       language=state.get("language"), extra=state.get("extra"))
         if outcome != "ok":
             return stop(state, "error", _t(ui, "The curriculum could not be retrieved: ", "تعذر استرجاع المنهج: ")
                         + str(found.get("message") or outcome))

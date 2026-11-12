@@ -46,7 +46,6 @@ from langgraph.graph import END, StateGraph
 
 from agents.config import REX_DEFAULT_MODEL
 from agents.course_intent import (
-    CATALOGUE_LISTING_HINT,
     COURSE_QUESTION,
     GENERAL,
     RECOMMENDATION,
@@ -57,13 +56,14 @@ from agents.course_intent import (
     looks_like_question,
     names_a_course,
 )
-from agents.rex_assistant import course_context, discovery
+from agents.rex_assistant import course_context, discovery, grounded_recommendation
 from agents.rex_assistant.course_context import AMBIGUOUS, NAMED, NONE
 from agents.rex_assistant.lead_store import LeadStore
 from agents.rex_assistant.mcp_client import RagMcpClient
 from agents.rex_assistant.prompts import (
     FOREIGN_SCRIPT,
     LANGUAGE_REMINDER,
+    MODE_CATALOGUE,
     MODE_QUESTION,
     MODE_RECOMMENDATION,
     build_messages,
@@ -71,11 +71,11 @@ from agents.rex_assistant.prompts import (
     course_question_task,
     evidence_context,
     is_absence_answer,
+    language_rule,
     strip_citations,
     fallback_key,
     message,
 )
-from agents.rex_assistant.recommendation import check_recommendation, recommendation_task
 from agents.rex_assistant.state import RexAssistantState
 from agents.text_utils import normalize_for_matching
 from knowledge_base.language import (
@@ -278,6 +278,37 @@ class CourseCatalogue:
         self._clock = clock
         self._courses: list[dict[str, Any]] = []
         self._next_refresh = 0.0
+        self._records: list[dict[str, Any]] = []
+        self._records_status = "unavailable"
+        self._next_records_refresh = 0.0
+
+    def records(self) -> tuple[list[dict[str, Any]], str]:
+        """
+        (verified course records, status) from the get_course_records MCP
+        tool: the only courses REX may recommend. Status is "ok",
+        "empty_index" or "unavailable" (tool missing or failed).
+        """
+        now = self._clock()
+        if now < self._next_records_refresh:
+            return self._records, self._records_status
+        getter = getattr(self._client, "get_course_records", None)
+        records, status = [], "unavailable"
+        if callable(getter):
+            try:
+                result = getter()
+                if isinstance(result, dict) and result.get("status") in ("ok", "empty_index"):
+                    records = grounded_recommendation.verified_records(result.get("records"))
+                    status = result["status"]
+            except Exception:
+                logger.warning("The course records are unavailable", exc_info=True)
+        if status != "unavailable":
+            self._records, self._records_status = records, status
+            self._next_records_refresh = now + COURSE_LIST_TTL_SECONDS
+        else:
+            self._next_records_refresh = now + COURSE_LIST_RETRY_SECONDS
+            if not self._records:
+                self._records_status = status
+        return self._records, self._records_status
 
     def courses(self) -> list[dict[str, Any]]:
         now = self._clock()
@@ -337,6 +368,11 @@ def _course_updates(text: str, state: RexAssistantState, catalogue: CourseCatalo
         return _clarify(text, reference.courses)
 
     focus = course_context.known_courses(course_context.clean_courses(state.get("course_focus")), courses)
+    position = course_context.ordinal_reference(text, len(focus))
+    if position is not None:
+        # "Tell me more about the first course": the first one just listed or recommended.
+        chosen = [focus[position]]
+        return {"course_scope": chosen, "course_focus": chosen, "course_question": text}
     if focus and course_context.refers_back(text):
         if len(focus) == 1:
             return {"course_scope": focus, "course_focus": focus, "course_question": text}
@@ -430,9 +466,11 @@ def _evidence_for_courses(
     Evidence about the selected course(s) only, plus general academy
     passages. A question that does not name the course itself ("How long
     is it?", or the original "the Python course" question after a choice)
-    is searched together with the course's name. If none of the course's
-    own passages ranks among the results, its passages are searched
-    directly with a metadata filter on its course id.
+    is searched together with the course's name. The course's own passages
+    are then searched directly too: the RAG tool is given the course ids
+    and limits the search to that course's passages (REX builds no database
+    filter itself); general passages (no course) of the first search are
+    kept after them.
     """
     named = course_context.resolve_reference(question, catalogue or courses)
     names_them = named.kind == NAMED and course_context.same_courses(named.courses, courses)
@@ -441,14 +479,17 @@ def _evidence_for_courses(
 
     if evidence is None:
         evidence = _search(mcp_client, question=question, retrieval_query=retrieval_query)
-    scoped, found = course_context.scope_evidence(evidence, courses)
+    scoped, _ = course_context.scope_evidence(evidence, courses)
 
-    metadata_filter = course_context.course_filter(courses)
-    if found or metadata_filter is None or evidence.get("status") not in ("ok", "no_results"):
+    course_ids = [c["course_id"] for c in courses if c.get("course_id")]
+    if not course_ids or evidence.get("status") not in ("ok", "no_results"):
         return scoped
+    # Also always the course's own passages: in a catalogue cut into small
+    # passages, the course's heading can rank while the passage that answers
+    # (its entry requirements, say) does not (live-index trace).
 
     filtered = _search(mcp_client, question=question, retrieval_query=retrieval_query,
-                       metadata_filter=metadata_filter)
+                       course_ids=course_ids)
     own, found_own = course_context.scope_evidence(filtered, courses)
     return course_context.merge_evidence(own, scoped) if found_own else scoped
 
@@ -506,6 +547,12 @@ def route_after_language(state: RexAssistantState) -> str:
 # Fields an extracted value is accepted for only when the message itself
 # answers them (normalize_answer on the message text).
 _EVIDENCE_FIELDS = ("skill_level", "training_preference", "budget", "available_time")
+MAX_SHORT_REPLY_WORDS = 4
+
+
+def _only_a_level(value: str) -> bool:
+    """'beginner', 'مبتدئ', 'an intermediate': a skill level and nothing else."""
+    return bool(discovery.normalize_answer("skill_level", value)) and len(value.split()) <= 2
 
 
 def _extract_profile_facts(llm, text: str) -> dict[str, str]:
@@ -590,10 +637,15 @@ def make_understand_node(model: str, catalogue: Optional[CourseCatalogue] = None
                     pending, answered = None, True
 
         question_turn = not answered and intent == COURSE_QUESTION
+        # A short reply that answered the question asked ("Computer Engineer",
+        # "مهندس كمبيوتر") answers only that question: extracting more fields
+        # from it let the model copy the same words into another field (the
+        # background became the career goal, and the goal was never asked).
+        short_reply = answered and len(text.split()) <= MAX_SHORT_REPLY_WORDS
 
         # 2. Free-form messages can state several facts at once ("I'm an
         #    accountant, beginner, I want to become a data analyst").
-        if intent == RECOMMENDATION or (in_discovery and not question_turn):
+        if not short_reply and (intent == RECOMMENDATION or (in_discovery and not question_turn)):
             for field, value in _extract_profile_facts(_get_llm(model), text).items():
                 if field not in discovery.ALL_FIELDS or not isinstance(value, str):
                     continue
@@ -606,6 +658,10 @@ def make_understand_node(model: str, catalogue: Optional[CourseCatalogue] = None
                         if field in ("budget", "available_time")
                         else discovery.normalize_answer(field, text)
                     )
+                elif _only_a_level(value):
+                    # "أنا مبتدئ" ("I am a beginner") is a skill level, never a
+                    # background, goal or interest (live trace: background = "مبتدئ").
+                    normalized = None
                 else:
                     normalized = discovery.normalize_answer(field, value)
                 if normalized:
@@ -679,7 +735,10 @@ def make_understand_node(model: str, catalogue: Optional[CourseCatalogue] = None
             "course_choice": None,
         }
 
-        if next_step == "retrieve" and answer_mode == MODE_QUESTION:
+        if next_step == "retrieve" and answer_mode == MODE_QUESTION and is_catalogue_listing(text):
+            # "What courses do you offer?" / "ما الدورات المتاحة في تحليل البيانات؟"
+            updates.update({"answer_mode": MODE_CATALOGUE, "course_focus": []})
+        elif next_step == "retrieve" and answer_mode == MODE_QUESTION:
             updates.update(_course_updates(text, state, catalogue))
 
         return updates
@@ -737,19 +796,94 @@ def make_general_node():
     return general_node
 
 
+_RECORD_FACTS = (("department", "Department"), ("level", "Level"), ("total_hours", "Duration"),
+                 ("delivery_mode", "Delivery mode"), ("fee_text", "Fee"), ("entry_requirements", "Entry requirements"),
+                 ("prerequisites_text", "Prerequisite courses"), ("target_audience", "Intended audience"),
+                 ("summary", "Summary"))
+
+
+def _record_passage(record: dict[str, Any]) -> dict[str, Any]:
+    """A verified course record (built by the RAG service from the indexed documents) as one evidence passage."""
+    lines = [f"Catalogue record of {record['course_id']} {record['course_name']} (from the indexed catalogue)"]
+    for key, label in _RECORD_FACTS:
+        value = record.get(key)
+        if key == "total_hours" and value:
+            value = f"{value} hours"
+        if key == "fee_text" and value is None and record.get("fee") is not None:
+            value = f"{record['fee']:g} {record.get('fee_currency') or ''}".strip()
+        lines.append(f"{label}: {value if value not in (None, '', []) else 'not stated in the catalogue'}")
+    return {"text": "\n".join(lines), "course_id": record["course_id"], "course_name": record["course_name"],
+            "source": (record.get("source_files") or [None])[0], "page": (record.get("pages") or [None])[0],
+            "section": "Catalogue record", "section_path": None, "record_id": None, "chunk_id": None,
+            "relevance_score": None, "distance": None}
+
+
+def _with_course_records(evidence: dict[str, Any], courses: list[dict[str, Any]],
+                         catalogue: "CourseCatalogue") -> dict[str, Any]:
+    """
+    The selected course's verified catalogue record, first among its
+    passages: in a catalogue cut into small passages the model could miss
+    a fact the retrieved passage does state ("45 guided learning hours" as
+    a heading; live-index trace). The record comes from the RAG tool
+    get_course_records and states only what the documents state.
+    """
+    if evidence.get("status") != "ok":
+        return evidence
+    wanted = {course_context.course_key(c) for c in courses}
+    records = [r for r in catalogue.records()[0] if course_context.course_key(r) in wanted]
+    if not records:
+        return evidence
+    chunks = [_record_passage(r) for r in records] + list(evidence.get("chunks") or [])
+    return {**evidence, "chunks": [{**chunk, "reference": n} for n, chunk in enumerate(chunks, start=1)]}
+
+
+# Passages retrieved for a recommendation (a question gets the default 5).
+RECOMMENDATION_TOP_K = 12
+
+
+def _catalogue_listing(mcp_client: RagMcpClient, text: str) -> dict[str, Any]:
+    """The get_course_records MCP tool for a listing request; a failure becomes an error result."""
+    getter = getattr(mcp_client, "get_course_records", None)
+    try:
+        result = getter(query=text) if callable(getter) else None
+    except Exception as exc:
+        logger.warning("Catalogue listing tool call failed", exc_info=True)
+        return {"status": "error", "records": [], "error": f"The catalogue listing is unavailable ({type(exc).__name__})."}
+    if not isinstance(result, dict) or "status" not in result:
+        return {"status": "error", "records": [], "error": "Unexpected tool response."}
+    return result
+
+
+_PROFILE_QUERY = {
+    "en": ("Courses suitable for a learner with ", "; ",
+           {"career_goal": "career goal", "interests": "interests", "background": "background",
+            "skill_level": "skill level", "training_preference": "training preference"}),
+    "ar": ("دورات مناسبة لمتعلم ", "، ",
+           {"career_goal": "هدفه المهني", "interests": "اهتماماته", "background": "خلفيته",
+            "skill_level": "مستواه", "training_preference": "يفضل التدريب"}),
+}
+# Stored codes as words of the query's language.
+_PROFILE_WORDS = {"ar": {"beginner": "مبتدئ", "intermediate": "متوسط", "advanced": "متقدم",
+                         "online": "أونلاين", "offline": "حضوري", "hybrid": "مدمج"}}
+
+
 def _recommendation_query(profile: dict[str, Any]) -> Optional[str]:
-    parts = [
-        f"{label}: {profile[field]}"
-        for field, label in (
-            ("career_goal", "career goal"),
-            ("interests", "interests"),
-            ("background", "background"),
-            ("skill_level", "skill level"),
-            ("training_preference", "training preference"),
-        )
-        if profile.get(field)
-    ]
-    return ("Courses suitable for a learner with " + "; ".join(parts)) if parts else None
+    """
+    The search text for a recommendation, in ONE language: Arabic when the
+    learner's answers are Arabic, so the RAG service translates a whole
+    sentence (English labels around Arabic values came out garbled:
+    ":: Data analysis;: data analysis;: beginner;..." in a live trace).
+    "No preference" is no search term.
+    """
+    language = "ar" if any(contains_arabic(str(v)) for v in profile.values() if v) else "en"
+    opening, separator, labels = _PROFILE_QUERY[language]
+    parts = []
+    for field in ("career_goal", "interests", "background", "skill_level", "training_preference"):
+        value = profile.get(field)
+        if not value or value == "no_preference":
+            continue
+        parts.append(f"{labels[field]}: {_PROFILE_WORDS.get(language, {}).get(value, value)}")
+    return (opening + separator.join(parts)) if parts else None
 
 
 def make_retrieve_node(mcp_client: RagMcpClient, catalogue: Optional[CourseCatalogue] = None):
@@ -760,7 +894,20 @@ def make_retrieve_node(mcp_client: RagMcpClient, catalogue: Optional[CourseCatal
 
         if state["answer_mode"] == MODE_RECOMMENDATION:
             retrieval_query = _recommendation_query(state.get("profile") or {})
-            return {"evidence": _search(mcp_client, question=text, retrieval_query=retrieval_query)}
+            # More passages than for a question: candidates come only from
+            # the courses whose passages this similarity search retrieves.
+            evidence = _search(mcp_client, question=text, retrieval_query=retrieval_query,
+                               top_k=RECOMMENDATION_TOP_K)
+            # Only these verified catalogue records may be recommended.
+            records, records_status = catalogue.records()
+            return {"evidence": {**evidence, "course_records": records, "course_records_status": records_status}}
+
+        if state["answer_mode"] == MODE_CATALOGUE:
+            # "What courses do you offer?" asks for the whole catalogue, which a
+            # top-k passage search cannot give: the RAG tool lists every
+            # verified course, narrowed by the request's topic or level.
+            return {"evidence": {"status": "ok", "question": text, "chunks": [],
+                                 "catalogue": _catalogue_listing(mcp_client, text)}}
 
         courses = catalogue.courses()
 
@@ -768,7 +915,8 @@ def make_retrieve_node(mcp_client: RagMcpClient, catalogue: Optional[CourseCatal
         scope = course_context.clean_courses(state.get("course_scope"))
         if scope:
             question = state.get("course_question") or text
-            return {"evidence": _evidence_for_courses(mcp_client, question, scope, courses)}
+            evidence = _evidence_for_courses(mcp_client, question, scope, courses)
+            return {"evidence": _with_course_records(evidence, scope, catalogue)}
 
         if (
             not courses
@@ -779,8 +927,6 @@ def make_retrieve_node(mcp_client: RagMcpClient, catalogue: Optional[CourseCatal
             # No course list to identify courses with: search a follow-up
             # without a course name in the context of the earlier question.
             retrieval_query = f"{text} (about: {state['active_topic']})"
-        elif is_catalogue_listing(text):
-            retrieval_query = f"{text}. {CATALOGUE_LISTING_HINT}"
         else:
             retrieval_query = None
 
@@ -805,9 +951,10 @@ def make_retrieve_node(mcp_client: RagMcpClient, catalogue: Optional[CourseCatal
         if reference.kind == AMBIGUOUS:
             return {"evidence": evidence, **_clarify(text, reference.courses)}
         if reference.kind == NAMED:
+            scoped = _evidence_for_courses(mcp_client, text, reference.courses, courses,
+                                           evidence=evidence if retrieval_query is None else None)
             return {
-                "evidence": _evidence_for_courses(mcp_client, text, reference.courses, courses,
-                                                  evidence=evidence if retrieval_query is None else None),
+                "evidence": _with_course_records(scoped, reference.courses, catalogue),
                 "course_scope": reference.courses,
                 "course_focus": reference.courses,
             }
@@ -847,19 +994,30 @@ def generate_answer(
     the course(s) a direct question is about, when REX identified them
     (the evidence is then already limited to them).
 
+    A recommendation is built from the verified catalogue records only
+    (grounded_recommendation.py, via _recommend_from_records): the model
+    picks record ids, and every course name and fact comes from a record.
+
+    A direct question:
     1. No usable evidence (empty index, no results, retrieval error):
        a fixed bilingual message, and the LLM is not called.
     2. Number the retrieved chunks so the answer can cite [1], [2]...
     3. Build the prompt: grounding rules, reply language, recent turns,
-       the recommendation task (profile + course layout) when
-       recommending, the evidence, and the learner's original question.
+       the course-question task, the evidence and the original question.
     4. Call the chat model.
-    5. Recommendations only: apply REX's course checks to the answer.
 
     Returns {"answer", "sources", "status"}; status is "answered" or the
     reason no answer was generated ("no_results", "empty_index",
-    "unavailable", "no_usable_evidence", "generation_failed").
+    "unavailable", "no_usable_evidence", "generation_failed",
+    "no_verified_courses", "no_suitable_course").
     """
+    if mode == MODE_CATALOGUE:
+        return _catalogue_answer(evidence.get("catalogue") or {}, language)
+    if mode == MODE_RECOMMENDATION:
+        # Only verified catalogue records may be recommended (retrieve_node
+        # attaches them); without them nothing is recommended.
+        return _recommend_from_records(llm, evidence, language, profile, declined)
+
     fallback = fallback_key(evidence)
     if fallback:
         return {"answer": message(fallback, language), "sources": [], "status": fallback}
@@ -869,12 +1027,9 @@ def generate_answer(
         return {"answer": message("no_usable_evidence", language), "sources": [],
                 "status": "no_usable_evidence"}
 
-    recommending = mode == MODE_RECOMMENDATION
-    # One generator for both modes; only the task differs.
     messages = build_messages(
         evidence.get("question", ""), context, language, history,
-        task=(recommendation_task(profile, declined) if recommending
-              else course_question_task(selected_courses)),
+        task=course_question_task(selected_courses),
         courses=evidence.get("courses") or [],
     )
 
@@ -891,15 +1046,62 @@ def generate_answer(
         return {"answer": message("generation_failed", language), "sources": [],
                 "status": "generation_failed"}
 
-    if recommending:
-        answer = check_recommendation(answer, context, profile, language)
-    elif is_absence_answer(answer):
+    if is_absence_answer(answer):
         # "The context does not contain X. [1], [2]": nothing supports an
         # absence, so the labels go and no sources are listed.
         return {"answer": strip_citations(answer), "sources": [], "status": "answered"}
 
     # Only the sources the answer relies on (cited, or naming their course).
     return {"answer": answer, "sources": cited_sources(answer, sources), "status": "answered"}
+
+
+def _catalogue_answer(listing: dict[str, Any], language: str) -> dict[str, Any]:
+    """
+    The catalogue written from the records the RAG tool returned (no model
+    call: every course and fact is copied from its record). Its sources
+    are the catalogue files the records come from.
+    """
+    status = listing.get("status")
+    if status in ("empty_index", "translation_failed"):
+        return {"answer": message(status, language), "sources": [], "status": status, "courses": []}
+    if status != "ok":
+        return {"answer": message("unavailable", language), "sources": [], "status": "unavailable", "courses": []}
+    answer, listed = grounded_recommendation.render_catalogue(listing, language)
+    files: list[str] = []
+    for record in listing.get("records") or []:
+        files.extend(f for f in record.get("source_files") or [] if f not in files)
+    sources = [{"reference": None, "course_id": None, "course_name": None, "source": f, "page": None,
+                "section": None, "section_path": None, "record_id": None, "chunk_id": None} for f in files]
+    return {"answer": answer, "sources": sources, "status": "answered" if listed else "no_results", "courses": listed}
+
+
+_RECOMMENDER_SYSTEM = (
+    "You are REX Assistant, the course advisor of the academy. You recommend only courses from the "
+    "catalogue list you are given, by their ids, and never invent, rename or combine courses."
+)
+
+
+def _recommend_from_records(llm, evidence: dict[str, Any], language: str,
+                            profile: Optional[dict[str, Any]], declined: Optional[list[str]]) -> dict[str, Any]:
+    """
+    A recommendation built from the verified catalogue records only (see
+    grounded_recommendation.py). With no records because the knowledge
+    base is empty or unreachable, the usual fixed message is given.
+    """
+    records = evidence.get("course_records") or []
+    fallback = fallback_key(evidence)
+    if not records and evidence.get("course_records_status", "unavailable") == "unavailable" and fallback != "empty_index":
+        fallback = "unavailable"
+    if fallback in ("empty_index", "unavailable"):
+        # The knowledge base is empty or unreachable: nothing can be verified.
+        return {"answer": message(fallback, language), "sources": [], "status": fallback}
+    _, sources = evidence_context(evidence.get("chunks") or [])
+    system = f"{_RECOMMENDER_SYSTEM}\n\n{language_rule(language)}"
+    written = grounded_recommendation.recommend(llm, _invoke_text, records, evidence, sources, language,
+                                                profile, declined, system)
+    if FOREIGN_SCRIPT.search(written["answer"]):
+        written["answer"] = re.sub(r"[ \t]{2,}", " ", FOREIGN_SCRIPT.sub(" ", written["answer"])).strip()
+    return written
 
 
 def make_generate_node(model: str):
@@ -928,6 +1130,9 @@ def make_generate_node(model: str):
                 "translation": evidence.get("translation"),
             },
         }
+        if mode == MODE_CATALOGUE and written.get("courses"):
+            # "Tell me more about the first one" refers to the listed courses.
+            updates["course_focus"] = course_context.clean_courses(written["courses"])
 
         if mode == MODE_RECOMMENDATION and written["status"] == "answered":
             missing = discovery.missing_fields(profile, [])

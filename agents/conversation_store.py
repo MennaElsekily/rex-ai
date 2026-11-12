@@ -33,8 +33,9 @@ DEFAULT_DB_PATH = Path(__file__).resolve().parent / "conversation_state.sqlite3"
 class ConversationStore:
     """SQLite-backed key-value store for (conversation_id, agent_name) state."""
 
-    def __init__(self, db_path: str | Path = DEFAULT_DB_PATH) -> None:
-        self.db_path = Path(db_path)
+    def __init__(self, db_path: str | Path | None = None) -> None:
+        # Resolved now, not at import: tests/conftest.py redirects DEFAULT_DB_PATH.
+        self.db_path = Path(db_path or DEFAULT_DB_PATH)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # check_same_thread=False because the Streamlit app and the

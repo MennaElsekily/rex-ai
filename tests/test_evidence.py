@@ -102,6 +102,8 @@ def test_english_question_returns_structured_evidence(translator):
         # metadata names one -- this hit has no course metadata.
         "course_id": None,
         "course_name": None,
+        # Added compatibly (MCP trace): the similarity-search distance.
+        "distance": 0.21,
     }
     assert result["courses"] == []
 
@@ -161,7 +163,10 @@ def test_arabizi_question_is_transliterated_then_translated(translator):
     assert "programming" in result["retrieval_query"]
 
 
-def test_translation_failure_is_reported_and_search_still_runs(translator):
+def test_translation_failure_is_reported_and_nothing_is_retrieved(translator):
+    # Changed on purpose: searching the English-only index with untranslated
+    # Arabic returned unrelated passages, so a failed translation now stops
+    # the search instead of silently searching the Arabic text.
     translator.fail = True
     evidence = _evidence([_hit()])
 
@@ -169,9 +174,9 @@ def test_translation_failure_is_reported_and_search_still_runs(translator):
 
     assert result["translation"] == "failed"
     assert "translation model unavailable" in result["translation_error"]
-    assert result["retrieval_query"] == "ما هي متطلبات الالتحاق؟"
-    assert result["status"] == STATUS_OK
-    evidence.retriever.retrieve.assert_called_once()
+    assert result["question"] == "ما هي متطلبات الالتحاق؟"
+    assert result["status"] == "translation_failed" and result["chunks"] == []
+    evidence.retriever.retrieve.assert_not_called()
 
 
 def test_the_generic_engine_adds_no_domain_specific_hint():
@@ -358,7 +363,10 @@ def test_course_list_reads_distinct_courses_from_the_metadata():
         {"course_id": "AI-101", "course_name": "Introduction to AI and Python"},
         {"course_id": "DA-301", "course_name": "Python for Data Analysis"},
     ]}
-    evidence.retriever.vector_store.collection.get.assert_called_once_with(include=["metadatas"])
+    collection = evidence.retriever.vector_store.collection
+    assert collection.get.call_args_list[0].kwargs == {"include": ["metadatas"]}
+    for write in ("add", "upsert", "update", "delete"):   # read-only
+        getattr(collection, write).assert_not_called()
 
 
 def test_course_list_reports_an_empty_index_and_failures_safely():

@@ -48,6 +48,18 @@ def _chunk(text="Entry requirements: basic computer literacy.", reference=1, **e
     return chunk
 
 
+def _record(course_id, name, **facts):
+    """A verified catalogue record, as the knowledge base's get_course_records returns it."""
+    return {"course_id": course_id, "course_name": name, "level": None, "total_hours": None, "duration": None,
+            "delivery_mode": None, "fee": None, "fee_currency": None, "entry_requirements": None,
+            "prerequisite_courses": [], "prerequisites_text": None, "target_audience": None, "summary": None,
+            "source_files": ["catalogue.pdf"], "pages": [1], **facts}
+
+
+def _with_records(evidence, *records):
+    return {**evidence, "course_records": list(records), "course_records_status": "ok"}
+
+
 def _evidence(status="ok", chunks=None, question="What are the entry requirements?"):
     return {
         "status": status, "question": question, "retrieval_query": question,
@@ -74,6 +86,8 @@ def test_answer_is_written_from_evidence_with_sources():
         "chunk_id": 12,
         # Added compatibly (two-mode REX, Phase 3): the passage's course.
         "course_id": None, "course_name": None,
+        # Added compatibly (traceability): how it ranked and what it says.
+        "relevance_score": 1.2, "distance": None, "excerpt": "Entry requirements: basic computer literacy.",
     }]
     assert "Entry requirements: basic computer literacy." in llm.user
     assert "What are the entry requirements?" in llm.user
@@ -149,10 +163,11 @@ def test_answer_language_follows_the_conversation(lang, phrase):
 
 
 def test_recommendation_mode_includes_profile_and_task():
-    llm = FakeLLM()
+    llm = FakeLLM("FL-101 :: It fits.")
+    evidence = _evidence(chunks=[_chunk(course_id="FL-101", course_name="Flutter Foundations")])
 
     generate_answer(
-        llm, _evidence(), "en", mode=MODE_RECOMMENDATION,
+        llm, _with_records(evidence, _record("FL-101", "Flutter Foundations")), "en", mode=MODE_RECOMMENDATION,
         profile={"career_goal": "data analyst", "training_preference": "online"},
         declined=["budget"],
     )
@@ -210,12 +225,16 @@ def test_question_answers_are_returned_as_written():
 
 
 def test_recommendation_checks_run_on_the_model_answer():
-    reply = "**Python Basics** [1]\n- Level: Advanced"
+    reply = "**Python Basics** [PB-301]\n- Level: Beginner"   # the model's own level claim is never used
+    evidence = _with_records(_evidence(chunks=[_chunk("Python Basics. Level: Advanced.", course_id="PB-301",
+                                                      course_name="Python Basics")]),
+                             _record("PB-301", "Python Basics", level="Advanced"))
 
-    result = generate_answer(FakeLLM(reply), _evidence(chunks=[_chunk("Python Basics. Level: Advanced.")]),
-                             "en", mode=MODE_RECOMMENDATION, profile={"skill_level": "beginner"})
+    result = generate_answer(FakeLLM(reply), evidence, "en", mode=MODE_RECOMMENDATION,
+                             profile={"skill_level": "beginner"})
 
-    assert "may be a step up" in result["answer"]
+    assert "- Level: Advanced (above your beginner level" in result["answer"]
+    assert "Level: Beginner" not in result["answer"]
 
 
 def test_section_path_is_shown_to_the_model():
@@ -323,15 +342,16 @@ def _course_evidence(question="What does the Python course cover?"):
 
 
 def test_both_modes_use_one_generator_with_their_own_task():
-    question_llm, recommend_llm = FakeLLM("Pandas [1]."), FakeLLM("**Python for Data Analysis** [1]")
+    question_llm, recommend_llm = FakeLLM("Pandas [1]."), FakeLLM("DA-301 :: Data skills.")
 
     generate_answer(question_llm, _course_evidence(), "en", mode=MODE_QUESTION)
-    generate_answer(recommend_llm, _course_evidence(), "en", mode=MODE_RECOMMENDATION,
-                    profile={"career_goal": "data analyst"})
+    generate_answer(recommend_llm, _with_records(_course_evidence(), _record("DA-301", "Python for Data Analysis")),
+                    "en", mode=MODE_RECOMMENDATION, profile={"career_goal": "data analyst"})
 
     assert "ANSWER TASK" in question_llm.user and "RECOMMENDATION TASK" not in question_llm.user
     assert "RECOMMENDATION TASK" in recommend_llm.user and "ANSWER TASK" not in recommend_llm.user
-    assert question_llm.system == recommend_llm.system  # the same grounding rules for both
+    # A recommendation chooses only from the verified catalogue records, by id.
+    assert "CATALOGUE COURSES" in recommend_llm.user and "never invent" in recommend_llm.system
 
 
 def test_the_model_sees_which_courses_the_evidence_covers():
@@ -369,10 +389,11 @@ def test_a_not_found_answer_lists_no_sources(answer):
 
 
 def test_recommendations_keep_their_cited_sources_and_checks():
-    llm = FakeLLM("**Python for Data Analysis** [1]\n- Why it fits you: data skills.\n- Level: Beginner\n"
-                  "- Delivery: not stated in the catalogue\n- Fees: not stated in the catalogue")
+    llm = FakeLLM("DA-301 :: It builds the data skills your goal needs.")
 
-    result = generate_answer(llm, _course_evidence(), "en", mode=MODE_RECOMMENDATION,
+    result = generate_answer(llm, _with_records(_course_evidence(), _record("DA-301", "Python for Data Analysis",
+                                                                            level="Beginner")),
+                             "en", mode=MODE_RECOMMENDATION,
                              profile={"career_goal": "data analyst", "skill_level": "beginner"})
 
     assert [s["reference"] for s in result["sources"]] == [1]
@@ -410,10 +431,13 @@ def test_real_answers_mentioning_a_missing_detail_keep_their_sources(answer):
 
 
 def test_recommendations_are_never_treated_as_absence_answers():
-    # The absence guard is for direct questions only; recommendations have
-    # their own checks (check_recommendation) and keep their cited sources.
-    llm = FakeLLM("Python for Data Analysis is not mentioned as online, but it teaches pandas [1].")
+    # The absence guard is for direct questions only; a recommendation keeps
+    # the retrieved passages of the recommended course as its sources.
+    llm = FakeLLM("DA-301 :: It is not mentioned as online. It teaches pandas [1].")
 
-    result = generate_answer(llm, _course_evidence(), "en", mode=MODE_RECOMMENDATION, profile={"career_goal": "x"})
+    result = generate_answer(llm, _with_records(_course_evidence(), _record("DA-301", "Python for Data Analysis")),
+                             "en", mode=MODE_RECOMMENDATION, profile={"career_goal": "x"})
 
-    assert [s["reference"] for s in result["sources"]] == [1] and "[1]" in result["answer"]
+    assert result["status"] == "answered" and [s["reference"] for s in result["sources"]] == [1]
+    # Only the fit sentence is kept: the model's delivery claim is not a catalogue fact.
+    assert "It teaches pandas." in result["answer"] and "not mentioned as online" not in result["answer"]

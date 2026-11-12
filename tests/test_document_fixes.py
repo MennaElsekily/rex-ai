@@ -496,7 +496,7 @@ def test_regenerating_redraws_the_page_with_the_new_version(env):
                                                  "result": {"kind": "document", "message": "Regenerated as version 2."}}]}
 
     env["orchestrator"].handle_request.side_effect = regenerate
-    at = unlock(start())
+    at = unlock(start(), section="documents")
     assert not [s for s in at.selectbox if s.key == f"doc_version_{document_id}_2"]
 
     at.button(key=f"doc_regen_{document_id}").click().run()
@@ -513,7 +513,7 @@ def test_a_failure_listing_curricula_is_shown_as_an_error(env, monkeypatch):
     monkeypatch.setattr(DocumentToolbox, "list_approved_curricula",
                         lambda self, limit=50, offset=0: {"status": "error", "message": "database is locked"})
 
-    at = unlock(start())
+    at = unlock(start(), section="documents")
 
     assert not at.exception
     assert any("could not be listed" in e.value and "database is locked" in e.value for e in at.error)
@@ -523,7 +523,7 @@ def test_a_failure_listing_curricula_is_shown_as_an_error(env, monkeypatch):
 def test_an_approved_current_version_can_be_edited_in_the_tab(env):
     toolbox = default_toolbox()
     _, document_id = make_document(toolbox)
-    at = unlock(start())
+    at = unlock(start(), section="documents")
     at.button(key=f"doc_approve_{document_id}").click().run()
     assert toolbox.store.get(document_id)["approved_version"] == 1
 
@@ -545,7 +545,7 @@ def test_the_document_list_shows_that_an_older_version_is_approved(env):
     toolbox.approve_document(document_id, 1, ADMIN)
     toolbox.save_admin_edit(toolbox.store.get(document_id)["content"], document_id, ADMIN)
 
-    at = unlock(start())
+    at = unlock(start(), section="documents")
 
     assert not at.exception
     assert any("approved v1" in e.label for e in at.expander)

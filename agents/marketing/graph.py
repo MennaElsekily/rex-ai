@@ -185,7 +185,12 @@ def build_graph(tools: Any, llm: Any):
         found = call("get_approved_course", curriculum_id=state["curriculum_id"])
         outcome = found.get("status")
         if outcome in ("not_approved", "not_found", "invalid_request"):
-            return stop(outcome, found.get("message") or _t(ui, "The course cannot be used.", "لا يمكن استخدام المقرر."))
+            # Kept so a chained request that paused here (admin_service.py's
+            # pending_workflows.py) can resume with this exact marketing
+            # request once the curriculum is approved, instead of
+            # re-matching free text against every approved course.
+            return stop(outcome, found.get("message") or _t(ui, "The course cannot be used.", "لا يمكن استخدام المقرر."),
+                       curriculum_id=state["curriculum_id"], options=state.get("options"))
         if outcome != "ok":
             return stop("error", _t(ui, "The course could not be retrieved: ", "تعذر استرجاع المقرر: ") + str(found.get("message") or outcome))
         record = found["course"]

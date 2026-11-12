@@ -54,7 +54,7 @@ class FakeRag:
                  courses=COURSES, list_fails=False):
         self.order, self.translations, self.courses = list(order), translations or {}, courses
         self.list_fails = list_fails
-        self.calls, self.list_calls = [], 0
+        self.calls, self.list_calls, self.listing_calls = [], 0, []
 
     def list_courses(self):
         self.list_calls += 1
@@ -62,12 +62,18 @@ class FakeRag:
             raise RuntimeError(r"MCP server down at E:\secret")
         return {"status": "ok", "courses": [dict(c) for c in self.courses], "error": None}
 
-    def search_knowledge_base(self, question, retrieval_query=None, metadata_filter=None):
+    def get_course_records(self, query=None, level=None):
+        """The verified catalogue records: the same courses (no other facts stated), always complete."""
+        self.listing_calls.append({"query": query, "level": level})
+        return {"status": "ok", "records": [dict(c) for c in self.courses], "total_in_catalogue": len(self.courses),
+                "complete": True, "filter": {}, "match_method": "all", "error": None}
+
+    def search_knowledge_base(self, question, retrieval_query=None, metadata_filter=None, course_ids=None,
+                              top_k=None):
         self.calls.append({"question": question, "retrieval_query": retrieval_query,
-                           "metadata_filter": metadata_filter})
-        if metadata_filter:
-            ids = metadata_filter["$or"][0]["field_course_id"]["$in"]
-            chunks = [CHUNKS[i] for i in ids]
+                           "metadata_filter": metadata_filter, "course_ids": course_ids, "top_k": top_k})
+        if course_ids:   # the RAG tool limits the search to these courses' passages
+            chunks = [CHUNKS[i] for i in course_ids]
         else:
             chunks = [CHUNKS[i] for i in self.order] + [GENERAL]
         chunks = [{**chunk, "reference": n} for n, chunk in enumerate(chunks, start=1)]
@@ -165,10 +171,10 @@ def test_one_matching_course_is_answered_from_its_own_passages(question, course,
     assert _passages_in_prompt(llm) == [course]
     assert _source_courses(result) <= {course, None}
     assert f"The question is about: {course}" in llm.prompt
-    # One search; a second, filtered to the course, only when none of its
-    # passages ranked in the first (MOB-201 is not in the fake's ranking).
-    assert [bool(call["metadata_filter"]) for call in rag.calls] == (
-        [False] if course in rag.order else [False, True])
+    # One search, then the course's own passages (the RAG tool limits that
+    # search to the course): changed after a live-index trace, where the
+    # course's heading ranked but its entry requirements did not.
+    assert [call["course_ids"] for call in rag.calls] == [None, [course]]
 
 
 # --------------------------------------------------------------------
@@ -272,8 +278,9 @@ def test_course_absent_from_the_results_is_searched_with_a_course_filter(llm):
 
     result = _converse(agent, "How long is the Python for Data Analysis course?")["result"]
 
-    assert rag.calls[-1]["metadata_filter"] == {"$or": [
-        {"field_course_id": {"$in": ["DA-301"]}}, {"field_course_code": {"$in": ["DA-301"]}}]}
+    # REX names the course; the RAG tool builds the database filter
+    # (knowledge_base/evidence.course_filter, tested in tests/test_course_filter_chroma.py).
+    assert rag.calls[-1]["course_ids"] == ["DA-301"] and rag.calls[-1]["metadata_filter"] is None
     assert _passages_in_prompt(llm) == ["DA-301"]
     assert "Refunds are possible" in llm.prompt          # general passage kept from the first search
     assert result["selected_course"]["course_id"] == "DA-301"
@@ -294,13 +301,16 @@ def test_a_new_topic_keeps_the_course_but_is_not_limited_to_it(agent, rag, llm):
     assert response["result"]["selected_course"]["course_id"] == "DA-301"
 
 
-def test_catalogue_listing_is_never_clarified_and_clears_the_course(agent, rag):
+def test_catalogue_listing_is_never_clarified_and_replaces_the_course(agent, rag):
     response = _converse(agent, "How long is the Python for Data Analysis course?",
                          "What Python courses are available?")
 
     assert response["result"]["course_options"] == []
     assert response["result"]["answer_status"] == "answered"
-    assert response["state"]["course_focus"] == []
+    # The listing comes from the catalogue tool, and the courses it lists
+    # (not the earlier DA-301) are what a follow-up refers to.
+    assert rag.listing_calls[-1] == {"query": "What Python courses are available?", "level": None}
+    assert [c["course_id"] for c in response["state"]["course_focus"]] == sorted(c["course_id"] for c in COURSES)
 
 
 # --------------------------------------------------------------------
@@ -397,7 +407,8 @@ def test_arabic_description_is_matched_on_the_english_search_query(llm):
 
     assert result["selected_course"]["course_id"] == "DA-301"
     assert _passages_in_prompt(llm) == ["DA-301"]
-    assert len(rag.calls) == 1        # the search already held DA-301's passages
+    # The first search identified DA-301; its own passages are then searched by id.
+    assert [call["course_ids"] for call in rag.calls] == [None, ["DA-301"]]
 
 
 def test_arabic_follow_up_without_context_asks_in_arabic(agent):
@@ -433,8 +444,7 @@ def test_recommendations_are_not_clarified(request_text, agent, rag, llm):
 
 
 def test_follow_up_after_a_recommendation_asks_which_recommended_course(agent, rag, llm):
-    llm.answer = ("**AI-101 Introduction to Artificial Intelligence and Python** [1]\n- Why it fits you: basics.\n\n"
-                  "**SW-301 Backend APIs with Python and Django** [2]\n- Why it fits you: next step.")
+    llm.answer = "AI-101 :: It covers the basics.\nSW-301 :: It is the next step."   # ids from the catalogue list
     response = agent.handle_message("Recommend a course for me", state={"profile": dict(FULL_PROFILE)})
     response = _converse(agent, "no", state=response["state"])               # consent: no
     focus = _ids(response["state"]["course_focus"])
@@ -450,11 +460,12 @@ def test_follow_up_after_a_recommendation_asks_which_recommended_course(agent, r
 # --------------------------------------------------------------------
 
 def test_sources_after_a_choice_belong_to_the_chosen_course_or_general_passages(agent, llm):
-    llm.answer = "It covers pandas [1]. Refunds within 14 days [2]."
+    # [1] is the chosen course's catalogue record, [2] its passage, [3] a general passage.
+    llm.answer = "It covers pandas [2]. Refunds within 14 days [3]."
 
     result = _converse(agent, "What does the Python course cover?", "3")["result"]
 
-    assert [(s["reference"], s["course_id"]) for s in result["sources"]] == [(1, "SW-301"), (2, None)]
+    assert [(s["reference"], s["course_id"]) for s in result["sources"]] == [(2, "SW-301"), (3, None)]
 
 
 def test_not_found_after_a_choice_lists_no_sources(agent, llm):
@@ -647,8 +658,8 @@ def test_unknown_course_with_a_shared_word_is_answered_unscoped(llm):
                 "course_name": None, "source": "brochure.pdf", "chunk_id": 9}
 
     class BrochureRag(FakeRag):
-        def search_knowledge_base(self, question, retrieval_query=None, metadata_filter=None):
-            result = super().search_knowledge_base(question, retrieval_query, metadata_filter)
+        def search_knowledge_base(self, question, retrieval_query=None, metadata_filter=None, **kwargs):
+            result = super().search_knowledge_base(question, retrieval_query, metadata_filter, **kwargs)
             result["chunks"] = [brochure, *[{**c, "reference": n} for n, c in enumerate(result["chunks"], start=2)]]
             return result
 

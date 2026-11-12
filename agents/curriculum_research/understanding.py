@@ -29,7 +29,7 @@ CURRICULUM_ID = re.compile(r"\b(CUR-[0-9a-f]{12})\b", re.IGNORECASE)
 _LEVELS = (
     # Only explicit level words: "Python Fundamentals" names a topic, not a level.
     ("Beginner", r"\b(?:beginners?|introductory|entry[\s-]level)\b|مبتدئ|مستوي\s+اساسي|تمهيدي"),
-    ("Intermediate", r"\bintermediate\b|متوسط"),
+    ("Intermediate", r"\bintermediate\b|\bmedium\s+level\b|متوسط"),
     ("Advanced", r"\badvanced\b|متقدم"),
 )
 _LEVEL_RES = [(level, re.compile(pattern)) for level, pattern in _LEVELS]

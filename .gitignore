@@ -24,6 +24,7 @@ Thumbs.db
 # Local SQLite runtime databases
 agents/conversation_state.sqlite3
 agents/rfp_research/rfp_opportunities.sqlite3
+agents/pending_workflows.sqlite3
 
 # Runtime data: admin-approved web research exported for indexing, and
 # learner details saved with consent
@@ -50,6 +51,10 @@ agents/marketing/marketing.sqlite3
 # SQLite runtime companions of any database (write-ahead log, shared memory, rollback journal)
 *.sqlite3-*
 
-# ChromaDB index of the course catalogue: runtime state, rebuilt by `python -m knowledge_base.pipeline`.
-# (A copy was committed once and is still tracked: ignore rules do not untrack. See README "Git and runtime files".)
+# Generated knowledge base: the ChromaDB index of the academy documents and the
+# ingestion's chunk metadata and manifest. Never committed -- every clone builds
+# its own from knowledge_base/documents/ with `python -m knowledge_base.pipeline`
+# (a committed copy came back on every branch switch and served an obsolete catalogue).
 knowledge_base/vector_db/
+knowledge_base/metadata/chunk_metadata.json
+knowledge_base/metadata/ingestion_manifest.json

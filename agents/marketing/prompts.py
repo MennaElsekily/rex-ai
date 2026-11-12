@@ -65,6 +65,19 @@ def channel_prompt(channel: str) -> ChatPromptTemplate:
     return _prompt(CHANNEL_TASKS[channel] + "\n" + _VARIATIONS)
 
 
+def more_variations_note(written: list[dict]) -> str:
+    """
+    Added when the model wrote fewer variations than asked (the local model often writes one long e-mail when asked for
+    two): it is asked for the missing ones only, and shown what is already written so it takes a different angle.
+    """
+    def first_line(v: dict) -> str:
+        text = next((str(v[k]) for k in ("subject", "headline", "text", "message", "body", "primary_text") if v.get(k)), "")
+        return text[:160]
+
+    quoted = "\n".join(f"  - \"{first_line(v)}\"" for v in written)
+    return ("\nThese variations are already written; do not repeat them, their wording or their angle:\n" + quoted)
+
+
 def cta_repair_note(previous: list[dict], invalid: Optional[set[int]] = None) -> str:
     """
     Added to the repair request of the call-to-action suggestions only: explains what a call to action is and quotes what

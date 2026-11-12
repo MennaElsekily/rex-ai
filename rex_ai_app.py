@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from typing import Callable
 
 import streamlit as st
 
@@ -30,6 +31,8 @@ from agents import register_agents
 from agents import user_service as user_module
 from agents.document_generation.templates import CURRICULUM_PDF, EXTRA_FIELDS, TEMPLATES, field_label, type_label
 from agents.marketing import schemas as marketing_schemas
+from agents.curriculum_research import editing as curriculum_editing
+from agents.rfp_research.application_profile import LONG_PROFILE_FIELDS
 from agents.rfp_research.state import ALLOWED_COUNTRIES, TRAINING_CATEGORIES
 
 # --------------------------------------------------------------------
@@ -131,10 +134,31 @@ T = {
                         "User interface.",
         "agents_examples": ["Find education and training tenders in Egypt and Saudi Arabia",
                             "Create a curriculum about data analysis"],
+        "new_conversation": "New conversation",
+        "floating_chat_label": "Ask REX AI",
+        "agents_involved": "Agents involved",
+        "partial_failure": "Part of this request could not be completed; see below.",
+        "resumed_after_approval": "Curriculum approved — continuing your request automatically.",
+        "bilingual_companion_ready": "Its Arabic/English companion was also prepared: `{id}`. Review it in the Curricula tab.",
+        "bilingual_companion_failed": "Its bilingual companion could not be prepared automatically: {error} You can "
+                                      "still use this version; a companion is not required.",
+        "cur_card_title": "Review and download",
+        "cur_card_language": {"en": "English", "ar": "Arabic"},
+        "cur_card_draft": "Draft: fix these validation problems (Curricula tab → Edit this version) before it can "
+                          "be approved:",
+        "cur_card_more": "Full content, side-by-side view and editing are in the Curricula tab.",
+        "awaiting_approval": "Waiting for the curriculum to be approved.",
         "country": "Country",
         "category": "Category",
         "keyword": "Keyword (title, organisation, summary)",
         "no_audit": "No review decisions yet.",
+        "audit_intro": "Every decision, newest first: who did what, when, and the status it changed.",
+        "audit_area": "Area",
+        "audit_areas": {"tender": "Tenders", "curriculum": "Curricula", "document": "Documents",
+                        "campaign": "Marketing"},
+        "audit_columns": {"when": "When (UTC)", "area": "Area", "item": "Item", "version": "Version",
+                          "action": "Action", "status": "Status", "by": "By", "notes": "Notes"},
+        "audit_tender_detail": "Tender decisions (full detail)",
         "details": "Details",
         # Approval and applications
         "approve_title": "Approve tender",
@@ -143,11 +167,13 @@ T = {
                          "you review and send it yourself).",
         "automatic_no": "Manual only: REX AI records the official steps for you.",
         "authorise_label": "I authorise REX AI to submit on the academy's behalf where supported",
-        "authorise_help": "Without this, nothing is ever submitted for you. In this version "
-                          "REX AI only prepares (dry run) and never sends anything.",
+        "authorise_help": "Without this, nothing is ever submitted or sent for you. Approving prepares a "
+                          "personalised email draft only; sending it is always a separate step you confirm.",
         "confirm_approve": "Approve",
         "cancel": "Cancel",
         "approved_flash": "Approved. Application: {status}.",
+        "open_application_email": "Review application email",
+        "email_ready_flash": " Its application email draft is ready to review in Tender dashboard.",
         "sub_status": {"not_started": "Not started", "in_progress": "In progress",
                        "submitted": "Submitted", "submission_failed": "Failed",
                        "requires_manual_action": "Needs manual action",
@@ -166,10 +192,37 @@ T = {
         "next_steps": "What to do",
         "prepared_email": "Prepared email (dry run: NOT sent)",
         "to": "To",
+        "will_send_to": "Will be sent to",
+        "tender_contact": "Tender's own contact",
+        "tender_contact_unused": "never used: every email goes to the configured recipient",
+        "no_verified_contact": "none verified",
+        "authorise_to_send": "Sending needs your authorisation to submit on the academy's behalf: use "
+                             "\"Authorise submission\" below, then send.",
         "from": "From",
         "subject": "Subject",
         "attachments": "Attachments",
         "recommended_missing": "Recommended but not uploaded",
+        "send_test_email_help": "This really sends the message above, through Resend -- the only action in REX AI "
+                                "that does. Test mode (the default) always sends it to **{recipient}**, never to "
+                                "the tender's own contact, so you can see a real email arrive without risking a "
+                                "real submission.",
+        "send_production_warning": "Production mode is active: this will really send the email to the configured "
+                                   "recipient, **{recipient}** (never to the tender's own contact).",
+        "confirm_send": "I understand this sends a real email",
+        "send_now": "Send now",
+        "email_sent_summary": "Sent to {to} on {at}.",
+        "email_redirected_note": "Test mode: the tender's real contact ({real}) was never used.",
+        "email_send_failed": "The send failed: {error}",
+        "body": "Body",
+        "demo_profile_email_warning": "This draft was generated from a DEMONSTRATION profile (the saved "
+                                      "contact email uses the reserved example.com domain), not a real "
+                                      "organisation's details.",
+        "draft_edited_note": "Edited by {by} on {at}.",
+        "save_draft_email": "Save draft",
+        "discard_draft_email": "Discard edit (revert to the generated draft)",
+        "recipient_not_configured": "Cannot send: REX_EMAIL_TEST_RECIPIENT is not configured with a valid email "
+                                    "address. Every application email goes only to that address; set it in your "
+                                    ".env file first.",
         "attempt_error": "Error",
         "record_submission": "Record manual submission",
         "submitted_on": "Submission date",
@@ -329,13 +382,53 @@ T = {
         "cur_references": "References",
         "cur_no_references": "No external research sources were used.",
         "cur_assumptions": "Assumptions and notes",
-        "cur_pdf_download": "Download PDF",
-        "cur_pdf_create": "Create PDF",
-        "cur_review": "Review this version",
+        "cur_pdf_download_approved": "Download approved PDF (v{v})",
+        "cur_pdf_after_approval": "The PDF is generated when an administrator approves this curriculum.",
+        "cur_pdf_newer_pending": "v{v} is newer and not approved yet; this PDF is the last approved version.",
+        "cur_zip_after_approval": "The ZIP of both languages is available once both are approved.",
+        "cur_bilingual_companion": "Bilingual companion: {id}",
+        "cur_show_side_by_side": "Show both languages side by side",
+        "cur_download_both": "Download both PDFs (ZIP)",
+        "cur_edit": "Edit this version",
+        "cur_edit_only_current": "Select the current version above to edit it.",
+        "cur_edit_title": "Course title",
+        "cur_edit_overview": "Course description",
+        "cur_edit_audience": "Target audience",
+        "cur_edit_prerequisites": "Prerequisites",
+        "cur_edit_objectives": "Learning objectives",
+        "cur_edit_outcomes": "Expected learning outcomes",
+        "cur_edit_outcomes_help": "One per line, as \"LO1: statement\". A line with no id gets the next free one.",
+        "cur_edit_modules": "Modules",
+        "cur_edit_modules_help": "One module per block, separated by a line of dashes (--------------------). "
+                                 "Fields: id (leave blank for a new module), title, hours, topics (comma-separated), "
+                                 "description, activities (\"type: description\", separated by |), outcome_ids "
+                                 "(comma-separated). Delete a whole block to remove that module.",
+        "cur_edit_assessments": "Assessment methods",
+        "cur_edit_assessments_help": "One assessment per block, separated by a line of dashes. Fields: id (blank "
+                                     "for new), type, description, outcome_ids (comma-separated).",
+        "cur_edit_include_capstone": "Include a capstone project",
+        "cur_edit_capstone_title": "Capstone title",
+        "cur_edit_capstone_description": "Capstone description",
+        "cur_edit_capstone_outcomes": "Capstone learning outcomes (comma-separated ids)",
+        "cur_edit_capstone_deliverables": "Capstone deliverables",
+        "cur_edit_tools": "Tools and resources",
+        "cur_edit_assumptions": "Additional notes and assumptions",
+        "cur_edit_one_per_line": "One per line.",
+        "cur_save_edit": "Save changes",
+        "cur_edit_saved_msg": "Changes saved as a new version, pending review.",
+        "cur_edit_saved_draft_msg": "Changes saved as a new version, but it is a draft: fix the validation problems "
+                                    "shown to make it reviewable.",
         "cur_notes": "Notes (required to request changes)",
         "cur_approve": "Approve",
         "cur_request_changes": "Request changes",
         "cur_not_reviewable": "Only the current version, while pending review, can be approved or sent back.",
+        "cur_why_not_reviewable": {
+            "draft": "Draft: it cannot be approved until the validation problems above are fixed. Use "
+                     "\"Edit this version\" below and save a corrected version.",
+            "approved": "Approved. Editing it creates a new version that needs its own approval.",
+            "changes_requested": "Changes were requested. Edit it below to save a new version for review.",
+            "old": "This is an older version. Select the current version to review it.",
+        },
         "cur_audit": "Review history",
         "cur_approved_msg": "Approved.",
         "cur_changes_msg": "Changes requested.",
@@ -355,7 +448,10 @@ T = {
                         "tax_number": "Tax registration number", "address": "Address",
                         "country": "Country of registration", "contact_person": "Contact person",
                         "contact_title": "Contact person's title", "contact_email": "Contact email",
-                        "contact_phone": "Contact phone", "website": "Website"},
+                        "contact_phone": "Contact phone", "website": "Website",
+                        "overview": "Organisation overview", "services": "Main services and areas of expertise",
+                        "experience": "Relevant experience and previous projects",
+                        "qualifications": "Qualifications and certifications"},
         "doc_label": {"company_profile": "Company profile",
                       "registration_certificate": "Commercial registration certificate",
                       "tax_card": "Tax card", "experience_references": "Experience / reference letters",
@@ -452,10 +548,30 @@ T = {
                         "أسئلة المتعلمين يجيب عنها ركس في واجهة المستخدم.",
         "agents_examples": ["ابحث عن مناقصات تعليم وتدريب في مصر والسعودية",
                             "أنشئ منهجًا عن تحليل البيانات"],
+        "new_conversation": "محادثة جديدة",
+        "floating_chat_label": "اسأل ريكس",
+        "agents_involved": "الوكلاء المشاركون",
+        "partial_failure": "جزء من هذا الطلب لم يكتمل؛ انظر أدناه.",
+        "resumed_after_approval": "تم اعتماد المنهج — سيستمر طلبك تلقائيًا.",
+        "bilingual_companion_ready": "تم أيضًا تجهيز نسخته العربية/الإنجليزية المقابلة: `{id}`. راجعها في تبويب المناهج.",
+        "bilingual_companion_failed": "تعذّر تجهيز نسخته اللغوية المقابلة تلقائيًا: {error} يمكنك الاستمرار "
+                                      "باستخدام هذه النسخة؛ النسخة المقابلة ليست مطلوبة.",
+        "cur_card_title": "المراجعة والتنزيل",
+        "cur_card_language": {"en": "الإنجليزية", "ar": "العربية"},
+        "cur_card_draft": "مسودة: أصلح مشكلات التحقق التالية (تبويب المناهج ← تعديل هذه النسخة) قبل أن يمكن اعتمادها:",
+        "cur_card_more": "المحتوى الكامل والعرض جنبًا إلى جنب والتعديل متاحة في تبويب المناهج.",
+        "awaiting_approval": "في انتظار اعتماد المنهج.",
         "country": "الدولة",
         "category": "المجال",
         "keyword": "كلمة (العنوان، الجهة، الملخص)",
         "no_audit": "لا توجد قرارات مراجعة بعد.",
+        "audit_intro": "كل القرارات، الأحدث أولًا: من فعل ماذا، ومتى، والحالة التي تغيّرت.",
+        "audit_area": "المجال",
+        "audit_areas": {"tender": "المناقصات", "curriculum": "المناهج", "document": "الوثائق",
+                        "campaign": "التسويق"},
+        "audit_columns": {"when": "الوقت (UTC)", "area": "المجال", "item": "العنصر", "version": "النسخة",
+                          "action": "الإجراء", "status": "الحالة", "by": "بواسطة", "notes": "ملاحظات"},
+        "audit_tender_detail": "قرارات المناقصات (تفاصيل كاملة)",
         "details": "التفاصيل",
         # Approval and applications
         "approve_title": "قبول المناقصة",
@@ -469,6 +585,8 @@ T = {
         "confirm_approve": "قبول",
         "cancel": "إلغاء",
         "approved_flash": "تم القبول. حالة الطلب: {status}.",
+        "open_application_email": "مراجعة بريد التقديم",
+        "email_ready_flash": " مسودة بريد التقديم جاهزة للمراجعة في لوحة المناقصات.",
         "sub_status": {"not_started": "لم يبدأ", "in_progress": "قيد التنفيذ",
                        "submitted": "تم التقديم", "submission_failed": "فشل",
                        "requires_manual_action": "يحتاج إجراءً يدويًا",
@@ -487,10 +605,34 @@ T = {
         "next_steps": "المطلوب",
         "prepared_email": "البريد المجهَّز (تجربة: لم يُرسَل)",
         "to": "إلى",
+        "will_send_to": "سيُرسَل إلى",
+        "tender_contact": "جهة اتصال المناقصة",
+        "tender_contact_unused": "لا تُستخدم أبدًا: يُرسَل كل بريد إلى المستلم المُهيأ",
+        "no_verified_contact": "لا يوجد عنوان موثّق",
+        "authorise_to_send": "الإرسال يتطلب تفويضك بالتقديم نيابةً عن الأكاديمية: استخدم «تفويض التقديم» أدناه "
+                             "ثم أرسل.",
         "from": "من",
         "subject": "الموضوع",
         "attachments": "المرفقات",
         "recommended_missing": "مستحسن لكن لم يُرفع",
+        "send_test_email_help": "هذا يرسل الرسالة أعلاه فعليًا عبر Resend -- الإجراء الوحيد في REX AI الذي يفعل "
+                                "ذلك. وضع التجربة (الافتراضي) يرسلها دائمًا إلى **{recipient}**، لا إلى جهة اتصال "
+                                "المنافسة نفسها، لتتمكن من رؤية بريد حقيقي يصل دون المخاطرة بتقديم فعلي.",
+        "send_production_warning": "وضع الإنتاج مفعَّل: سيُرسَل هذا البريد فعليًا إلى المستلم المُهيأ "
+                                   "**{recipient}** (وليس أبدًا إلى جهة اتصال المناقصة).",
+        "confirm_send": "أدرك أن هذا يرسل بريدًا إلكترونيًا حقيقيًا",
+        "send_now": "إرسال الآن",
+        "email_sent_summary": "أُرسل إلى {to} في {at}.",
+        "email_redirected_note": "وضع التجربة: لم تُستخدم جهة اتصال المنافسة الحقيقية ({real}).",
+        "email_send_failed": "فشل الإرسال: {error}",
+        "body": "النص",
+        "demo_profile_email_warning": "هذا المسودة تم إنشاؤها من ملف تعريف تجريبي (البريد الإلكتروني "
+                                      "المحفوظ يستخدم نطاق example.com المحجوز)، وليس تفاصيل منظمة حقيقية.",
+        "draft_edited_note": "عدّله {by} في {at}.",
+        "save_draft_email": "حفظ المسودة",
+        "discard_draft_email": "تجاهل التعديل (الرجوع إلى المسودة المُنشأة)",
+        "recipient_not_configured": "لا يمكن الإرسال: REX_EMAIL_TEST_RECIPIENT غير مُهيأ ببريد إلكتروني صالح. "
+                                    "يُرسَل كل بريد تقديم إلى هذا العنوان فقط؛ اضبطه في ملف .env أولًا.",
         "attempt_error": "خطأ",
         "record_submission": "تسجيل تقديم يدوي",
         "submitted_on": "تاريخ التقديم",
@@ -645,13 +787,53 @@ T = {
         "cur_references": "المراجع",
         "cur_no_references": "لم تُستخدم مصادر بحث خارجية.",
         "cur_assumptions": "الافتراضات والملاحظات",
-        "cur_pdf_download": "تنزيل PDF",
-        "cur_pdf_create": "إنشاء PDF",
-        "cur_review": "مراجعة هذه النسخة",
+        "cur_pdf_download_approved": "تنزيل ملف PDF المعتمد (v{v})",
+        "cur_pdf_after_approval": "يُنشأ ملف PDF عندما يعتمد المسؤول هذا المنهج.",
+        "cur_pdf_newer_pending": "النسخة v{v} أحدث ولم تُعتمد بعد؛ هذا الملف هو آخر نسخة معتمدة.",
+        "cur_zip_after_approval": "يتوفر ملف ZIP للغتين بعد اعتماد كلتيهما.",
+        "cur_bilingual_companion": "النسخة اللغوية المقابلة: {id}",
+        "cur_show_side_by_side": "عرض اللغتين جنبًا إلى جنب",
+        "cur_download_both": "تنزيل ملفي PDF معًا (ZIP)",
+        "cur_edit": "تعديل هذه النسخة",
+        "cur_edit_only_current": "اختر النسخة الحالية أعلاه لتعديلها.",
+        "cur_edit_title": "عنوان الدورة",
+        "cur_edit_overview": "وصف الدورة",
+        "cur_edit_audience": "الجمهور المستهدف",
+        "cur_edit_prerequisites": "المتطلبات المسبقة",
+        "cur_edit_objectives": "أهداف التعلم",
+        "cur_edit_outcomes": "مخرجات التعلم المتوقعة",
+        "cur_edit_outcomes_help": "سطر لكل مخرج، بصيغة «LO1: النص». السطر بلا معرّف يُعطى المعرّف التالي المتاح.",
+        "cur_edit_modules": "الوحدات",
+        "cur_edit_modules_help": "وحدة واحدة لكل كتلة، تفصل بينها سطر شرطات (--------------------). الحقول: "
+                                "id (اتركه فارغًا لوحدة جديدة)، title، hours، topics (مفصولة بفواصل)، description، "
+                                "activities («النوع: الوصف»، مفصولة بـ |)، outcome_ids (مفصولة بفواصل). لحذف "
+                                "وحدة، احذف كتلتها بالكامل.",
+        "cur_edit_assessments": "طرق التقييم",
+        "cur_edit_assessments_help": "تقييم واحد لكل كتلة، تفصل بينها سطر شرطات. الحقول: id (فارغ لتقييم جديد)، "
+                                     "type، description، outcome_ids (مفصولة بفواصل).",
+        "cur_edit_include_capstone": "تضمين مشروع ختامي",
+        "cur_edit_capstone_title": "عنوان المشروع الختامي",
+        "cur_edit_capstone_description": "وصف المشروع الختامي",
+        "cur_edit_capstone_outcomes": "مخرجات التعلم للمشروع الختامي (معرّفات مفصولة بفواصل)",
+        "cur_edit_capstone_deliverables": "مخرجات تسليم المشروع الختامي",
+        "cur_edit_tools": "الأدوات والموارد",
+        "cur_edit_assumptions": "ملاحظات وافتراضات إضافية",
+        "cur_edit_one_per_line": "سطر واحد لكل عنصر.",
+        "cur_save_edit": "حفظ التعديلات",
+        "cur_edit_saved_msg": "حُفظت التعديلات كنسخة جديدة، في انتظار المراجعة.",
+        "cur_edit_saved_draft_msg": "حُفظت التعديلات كنسخة جديدة، لكنها مسودة: أصلح مشكلات التحقق المعروضة "
+                                    "لتصبح قابلة للمراجعة.",
         "cur_notes": "ملاحظات (مطلوبة عند طلب التعديلات)",
         "cur_approve": "اعتماد",
         "cur_request_changes": "طلب تعديلات",
         "cur_not_reviewable": "يمكن اعتماد النسخة الحالية أو إعادتها فقط وهي بانتظار المراجعة.",
+        "cur_why_not_reviewable": {
+            "draft": "مسودة: لا يمكن اعتمادها حتى تُصلح مشكلات التحقق أعلاه. استخدم «تعديل هذه النسخة» "
+                     "أدناه واحفظ نسخة مصححة.",
+            "approved": "معتمدة. تعديلها يُنشئ نسخة جديدة تحتاج إلى اعتماد خاص بها.",
+            "changes_requested": "طُلبت تعديلات. عدّلها أدناه لحفظ نسخة جديدة للمراجعة.",
+            "old": "هذه نسخة أقدم. اختر النسخة الحالية لمراجعتها.",
+        },
         "cur_audit": "سجل المراجعة",
         "cur_approved_msg": "تم الاعتماد.",
         "cur_changes_msg": "تم طلب التعديلات.",
@@ -670,7 +852,10 @@ T = {
                         "tax_number": "رقم التسجيل الضريبي", "address": "العنوان",
                         "country": "بلد التسجيل", "contact_person": "مسؤول التواصل",
                         "contact_title": "صفة مسؤول التواصل", "contact_email": "بريد التواصل",
-                        "contact_phone": "هاتف التواصل", "website": "الموقع الإلكتروني"},
+                        "contact_phone": "هاتف التواصل", "website": "الموقع الإلكتروني",
+                        "overview": "نظرة عامة عن المنظمة", "services": "الخدمات الرئيسية ومجالات الخبرة",
+                        "experience": "الخبرة ذات الصلة والمشاريع السابقة",
+                        "qualifications": "المؤهلات والشهادات"},
         "doc_label": {"company_profile": "ملف تعريف الشركة",
                       "registration_certificate": "شهادة السجل التجاري",
                       "tax_card": "البطاقة الضريبية", "experience_references": "خطابات الخبرة والمراجع",
@@ -741,6 +926,9 @@ def init_session() -> None:
         "last_search": None,
         "approve_for": None,   # (opportunity_id, title) while the approve dialog is open
         "flash": None,         # a message shown once after an action
+        "admin_section": "review",   # the active admin section; only the sidebar (or "open in ...") changes it
+        "open_curriculum": None,     # a curriculum the admin asked to open in the Curriculum section
+        "open_tender": None,         # an approved tender the admin asked to open in Tender dashboard
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -748,29 +936,28 @@ def init_session() -> None:
 
 CSS = """
 <style>
-.rex-hero {padding: 2rem 1.6rem; border-radius: 22px; margin-bottom: 1.4rem;
-  background: linear-gradient(135deg, #4f46e5 0%, #0ea5a4 100%); color: #fff;}
-.rex-hero h1 {color: #fff; font-size: 2.6rem; margin: 0; letter-spacing: -0.02em;}
-.rex-hero p {color: #fff; opacity: .92; margin: .35rem 0 0; font-size: 1.08rem;}
+/* Deliberately minimal: the theme (.streamlit/config.toml) sets the white background and the one
+   accent colour; this only adds what the theme cannot -- a title style and small status badges. */
+.rex-hero {padding: 1.4rem 0 .6rem; border-bottom: 1px solid #e5e7eb; margin-bottom: 1.2rem;}
+.rex-hero h1 {font-size: 2.1rem; margin: 0; letter-spacing: -0.01em;}
+.rex-hero p {color: #6b7280; margin: .25rem 0 0; font-size: 1.02rem;}
 .rex-title {display: flex; align-items: center; gap: .6rem; margin: .2rem 0 .6rem;}
 .rex-title h2 {margin: 0;}
-.rex-badge {display: inline-block; padding: .08rem .6rem; border-radius: 999px;
-  font-size: .78rem; font-weight: 600; margin-inline-end: .35rem;}
-.rex-pending {background: #fef3c7; color: #92400e;}
-.rex-approved {background: #d1fae5; color: #065f46;}
-.rex-rejected {background: #fee2e2; color: #991b1b;}
-.rex-agent {background: #e0e7ff; color: #3730a3;}
-.rex-flagged {background: #fee2e2; color: #b91c1c;}
-.rex-monitored {background: #e0f2fe; color: #075985;}
-.rex-priority {background: #ede9fe; color: #5b21b6;}
-.rex-sub-submitted, .rex-app-applied, .rex-app-awarded {background: #d1fae5; color: #065f46;}
-.rex-sub-requires_manual_action, .rex-sub-in_progress {background: #fef3c7; color: #92400e;}
-.rex-sub-submission_failed, .rex-sub-outcome_unknown, .rex-app-not_awarded {background: #fee2e2; color: #991b1b;}
-.rex-sub-not_started, .rex-app-not_applied, .rex-app-withdrawn {background: #e5e7eb; color: #374151;}
-.rex-cur-approved {background: #d1fae5; color: #065f46;}
-.rex-cur-pending_review {background: #fef3c7; color: #92400e;}
-.rex-cur-changes_requested {background: #fee2e2; color: #991b1b;}
-.rex-cur-draft {background: #e5e7eb; color: #374151;}
+
+.stButton button, .stDownloadButton button, .stFormSubmitButton button {border-radius: 8px;}
+[data-testid="stSidebar"] .stButton button {justify-content: flex-start;}
+
+.rex-badge {display: inline-block; padding: .05rem .55rem; border-radius: 999px;
+  font-size: .78rem; font-weight: 600; margin-inline-end: .35rem; border: 1px solid transparent;}
+.rex-pending, .rex-cur-pending_review, .rex-sub-requires_manual_action, .rex-sub-in_progress
+  {background: #fff7e6; color: #92400e; border-color: #fde3b0;}
+.rex-approved, .rex-cur-approved, .rex-sub-submitted, .rex-app-applied, .rex-app-awarded
+  {background: #ecfdf3; color: #05603a; border-color: #b7ebc9;}
+.rex-rejected, .rex-flagged, .rex-cur-changes_requested, .rex-sub-submission_failed,
+.rex-sub-outcome_unknown, .rex-app-not_awarded {background: #fef2f2; color: #991b1b; border-color: #fbd0d0;}
+.rex-agent, .rex-monitored, .rex-priority {background: #eef2ff; color: #3b4cb8; border-color: #d6dcfb;}
+.rex-cur-draft, .rex-sub-not_started, .rex-app-not_applied, .rex-app-withdrawn
+  {background: #f3f4f6; color: #374151; border-color: #e5e7eb;}
 [data-testid="stChatMessage"] p, [data-testid="stChatMessage"] li,
 .rex-auto p {unicode-bidi: plaintext; text-align: start;}
 </style>
@@ -780,6 +967,7 @@ RTL_CSS = """
 <style>
 [data-testid="stMainBlockContainer"], .main .block-container,
 [data-testid="stDialog"] [role="dialog"] {direction: rtl;}
+[data-testid="stSidebar"] {direction: rtl;}
 [data-testid="stMarkdownContainer"], [data-testid="stCaptionContainer"] {text-align: right;}
 input, textarea {direction: rtl; text-align: right;}
 </style>
@@ -802,6 +990,11 @@ def plain(text) -> str:
 
 def badge(css_class: str, label: str) -> str:
     return f'<span class="rex-badge rex-{css_class}">{label}</span>'
+
+
+def section_header(icon: str, title_key: str) -> None:
+    """One consistent header (icon + title + a quiet divider) at the top of every admin section."""
+    st.subheader(t(title_key), icon=icon, divider="gray")
 
 
 def language_switcher() -> None:
@@ -910,8 +1103,19 @@ def render_sources(sources: list[dict]) -> None:
         return
     with st.expander(t("sources"), icon=":material/menu_book:"):
         for source in sources:
+            # Exactly what the knowledge base returned: file, page, course,
+            # chunk, ranking and the retrieved text (nothing is added here).
+            reference = f"**[{source['reference']}]** " if source.get("reference") is not None else ""
             page = f", {t('page')} {source['page']}" if source.get("page") else ""
-            st.markdown(f"**[{source.get('reference')}]** {plain(source.get('source'))}{page}")
+            course = (f" · {plain(source.get('course_id') or '')} {plain(source.get('course_name') or '')}"
+                      if source.get("course_id") else "")
+            st.markdown(f"{reference}{plain(source.get('source'))}{page}{course}")
+            trace = [f"chunk {source['chunk_id']}" if source.get("chunk_id") is not None else "",
+                     f"relevance {source['relevance_score']}" if source.get("relevance_score") is not None else "",
+                     f"distance {source['distance']}" if source.get("distance") is not None else ""]
+            if any(trace) or source.get("excerpt"):
+                st.caption(" · ".join(p for p in trace if p) + (f" — {plain(source['excerpt'])}"
+                                                                 if source.get("excerpt") else ""))
 
 
 def send_to_rex(message: str) -> None:
@@ -1082,6 +1286,16 @@ def review_item(tender: dict) -> None:
                     st.session_state.flash = t("decided").format(status=t(decision))
                     st.rerun()
             column += 1
+        if status == "approved" and buttons[column].button(t("open_application_email"), icon=":material/mail:",
+                                                           key=f"open_email_{opp_id}"):
+            open_tender_application(opp_id)
+
+
+def open_tender_application(opp_id: str) -> None:
+    """An explicit navigation the admin asked for: Tender dashboard, with this tender's application opened."""
+    st.session_state.admin_section = "dashboard"
+    st.session_state.open_tender = opp_id
+    st.rerun()
 
 
 def _close_approve() -> None:
@@ -1103,8 +1317,9 @@ def approve_dialog() -> None:
         if confirm.button(t("confirm_approve"), type="primary", key="confirm_approve", width="stretch"):
             result = admin_call("decide", opp_id, "approved", authorize_submission=authorise)
             st.session_state.approve_for = None
+            prepared = ((result.get("application") or {}).get("confirmation") or {}).get("prepared_email")
             st.session_state.flash = t("approved_flash").format(
-                status=t("sub_status")[result["submission_status"]])
+                status=t("sub_status")[result["submission_status"]]) + (t("email_ready_flash") if prepared else "")
             st.rerun()
         if cancel.button(t("cancel"), key="cancel_approve", width="stretch"):
             st.session_state.approve_for = None
@@ -1139,6 +1354,7 @@ def tender_filters(prefix: str):
 
 
 def review_tab(counts: dict) -> None:
+    section_header(":material/fact_check:", "tab_review")
     st.caption(t("review_help"))
     choice = st.segmented_control(
         "Status", options=["pending", "approved", "rejected", "all"], default="pending",
@@ -1157,6 +1373,7 @@ def review_tab(counts: dict) -> None:
 
 
 def search_tab() -> None:
+    section_header(":material/travel_explore:", "tab_search")
     st.caption(t("search_intro"))
     with st.form("tender_search_form", border=True):
         countries = st.multiselect(t("countries"), list(ALLOWED_COUNTRIES),
@@ -1195,11 +1412,21 @@ def search_tab() -> None:
             render_agent_result(result)
 
 
-def render_agent_result(result: dict) -> None:
+def render_agent_result(result: dict, key_suffix: str = "") -> None:
     agent = result.get("agent_name", "")
     label = AGENT_LABELS.get(agent, {}).get(lang(), agent)
     st.markdown(f'<span class="rex-badge rex-agent">{label}</span>', unsafe_allow_html=True)
 
+    if result.get("status") == "waiting_for_input":
+        st.info((result.get("result") or {}).get("message") or t("awaiting_approval"))
+        return
+    if result.get("status") == "paused":
+        body = result.get("result") or {}
+        st.info(body.get("message") or t("awaiting_approval"))
+        if body.get("curriculum_id"):
+            st.caption(f"{t('tab_curricula')}: `{body['curriculum_id']}`")
+            curriculum_review_card(body["curriculum_id"], key_suffix)
+        return
     if result.get("status") != "success":
         st.error(result.get("error_message") or t("rex_error"))
         return
@@ -1211,54 +1438,189 @@ def render_agent_result(result: dict) -> None:
     if body.get("message"):
         # One line per point; Markdown needs "  \n" for a line break.
         st.markdown(plain(body["message"]).replace("\n", "  \n"))
-    for opportunity in body.get("opportunities") or []:
-        with st.expander(plain(opportunity.get("title") or opportunity.get("url"))):
+    for i, opportunity in enumerate(body.get("opportunities") or []):
+        with st.expander(plain(opportunity.get("title") or opportunity.get("url")),
+                         key=f"agent_result_opp_{id(result)}_{i}{key_suffix}"):
             st.markdown(tender_badges(opportunity, with_status=False), unsafe_allow_html=True)
             tender_details(opportunity)
             tender_links(opportunity, st.columns(2))
     if body.get("curriculum_id"):
         st.caption(f"{t('tab_curricula')}: `{body['curriculum_id']}`")
+    if body.get("bilingual_companion_id"):
+        st.success(t("bilingual_companion_ready").format(id=body["bilingual_companion_id"]))
+    elif body.get("bilingual_companion_error"):
+        st.warning(t("bilingual_companion_failed").format(error=plain(body["bilingual_companion_error"])))
+    if body.get("kind") == "curriculum" and body.get("curriculum_id"):
+        curriculum_review_card(body["curriculum_id"], key_suffix)
     # The full curriculum is read in the Curricula tab, not as raw JSON here.
-    extra = {k: v for k, v in body.items() if k not in ("message", "opportunities", "curriculum")}
+    extra = {k: v for k, v in body.items()
+            if k not in ("message", "opportunities", "curriculum", "bilingual_companion_id", "bilingual_companion_error",
+                         "bilingual_companion_status")}
     if extra:
-        with st.expander(t("details")):
+        with st.expander(t("details"), key=f"agent_result_details_{id(result)}{key_suffix}"):
             st.json(extra, expanded=False)
 
 
-def agents_tab() -> None:
-    st.caption(t("agents_intro"))
+def curriculum_review_card(curriculum_id: str, key_suffix: str) -> None:
+    """
+    Right under a curriculum result in the chat: the curriculum and its
+    bilingual companion, each with its LIVE status, its PDF and -- only
+    while its current version is pending review -- an Approve button for
+    exactly that version. A draft says which validation problems keep it
+    from being approved instead of silently showing no button.
+    """
+    companion_id = admin_call("curriculum_translation", curriculum_id)
+    entries = [(cid, detail) for cid in [curriculum_id, *([companion_id] if companion_id else [])]
+               if (detail := admin_call("get_curriculum", cid))]
+    if not entries:
+        return
+    entries.sort(key=lambda entry: entry[1]["curriculum"]["content"].get("language") != "en")
+    labels, languages = t("cur_status"), t("cur_card_language")
+
+    st.markdown(f"**{t('cur_card_title')}**")
+    for column, (cid, detail) in zip(st.columns(len(entries)), entries):
+        record = detail["curriculum"]
+        version, status, language = record["version"], record["status"], record["content"].get("language")
+        with column.container(border=True):
+            st.markdown(f"**{languages.get(language, language)}** · {plain(record['content'].get('title'))}")
+            st.markdown(badge(f"cur-{status}", labels.get(status, status)) + f" `{cid}` · v{version}",
+                        unsafe_allow_html=True)
+            errors = (record.get("validation") or {}).get("errors") or []
+            if status == "draft" and errors:
+                st.warning(t("cur_card_draft") + "\n" + "\n".join(f"- {plain(e.get('message'))}" for e in errors[:5]))
+                if st.button(t("cur_edit"), icon=":material/edit:", key=f"chat_cur_edit_{cid}_v{version}{key_suffix}"):
+                    open_curriculum_section(cid)
+            # The version is part of the key: a click can never approve a newer version than the one shown.
+            if status == "pending_review" and st.button(t("cur_approve"), type="primary", icon=":material/check:",
+                                                        key=f"chat_cur_approve_{cid}_v{version}{key_suffix}"):
+                if admin_action("approve_curriculum", cid, version):
+                    st.session_state.flash = t("cur_approved_msg")
+                    st.rerun()
+            approved_pdf_button(cid, record, f"chat_cur_pdf_{cid}{key_suffix}")
+    if companion_id:
+        bilingual_zip_button(curriculum_id, [detail["curriculum"] for _, detail in entries],
+                             f"chat_cur_zip_{curriculum_id}{key_suffix}")
+    st.caption(t("cur_card_more"))
+
+
+def _download_from_service(method: str, *args) -> Callable[[], bytes]:
+    """
+    Download data built only when the admin clicks (Streamlit runs it on its
+    own thread, without this session's state, hence the bound service and
+    token). Pages never re-read every PDF on every rerun.
+    """
+    service, token = get_admin_service(), st.session_state.admin_token
+    return lambda: getattr(service, method)(token, *args)["data"]
+
+
+def approved_pdf_button(curriculum_id: str, record: dict, key: str) -> None:
+    """The latest APPROVED version's PDF, or why there is none yet. Never a PDF of an unapproved version."""
+    approved = record.get("approved_version")
+    if not approved:
+        st.caption(t("cur_pdf_after_approval"))
+        return
+    language = (record["content"].get("language") if approved == record["version"]
+                else admin_call("get_curriculum", curriculum_id, approved)["curriculum"]["content"].get("language"))
+    st.download_button(t("cur_pdf_download_approved").format(v=approved),
+                       _download_from_service("curriculum_pdf", curriculum_id, approved),
+                       file_name=f"{curriculum_id}_v{approved}_{language}.pdf", mime="application/pdf",
+                       icon=":material/download:", on_click="ignore", key=f"{key}_v{approved}")
+    if approved != record["version"]:
+        st.caption(t("cur_pdf_newer_pending").format(v=record["version"]))
+
+
+def bilingual_zip_button(curriculum_id: str, records: list[dict], key: str) -> None:
+    """Both languages' approved PDFs in one ZIP -- offered once every language has an approved version."""
+    if not all(r.get("approved_version") for r in records):
+        st.caption(t("cur_zip_after_approval"))
+        return
+    st.download_button(t("cur_download_both"), _download_from_service("curricula_pdf_zip", curriculum_id),
+                       file_name=f"{curriculum_id}_bilingual.zip", mime="application/zip",
+                       icon=":material/folder_zip:", on_click="ignore", key=key)
+
+
+def open_curriculum_section(curriculum_id: str) -> None:
+    """An explicit navigation the admin asked for: the Curriculum section, with this curriculum opened."""
+    st.session_state.admin_section = "curricula"
+    st.session_state.open_curriculum = curriculum_id
+    st.rerun()
+
+
+def agents_tab(key_suffix: str = "") -> None:
+    """
+    One conversational interface for every admin agent: the admin types a
+    request in plain language (English or Arabic), the existing Central
+    Orchestrator decides which specialist agent(s) handle it -- including
+    chained, multi-agent requests -- and the reply is shown as one
+    assistant turn. Nothing here bypasses the orchestrator or creates a
+    second routing system; this function only changes how its replies look.
+
+    key_suffix: the floating launcher (floating_assistant()) renders this
+    same function a second time, over the same conversation, so its
+    widgets need their own keys -- Streamlit requires every widget key to
+    be unique even when two widgets show the same data.
+    """
+    if not key_suffix:   # the floating popover is compact; the full header belongs to the tab only
+        section_header(":material/forum:", "tab_agents")
+    top = st.columns([5, 1])
+    top[0].caption(t("agents_intro"))
+    if top[1].button(t("new_conversation"), icon=":material/add_comment:", width="stretch",
+                     key=f"new_conversation{key_suffix}", disabled=not st.session_state.admin_chat):
+        st.session_state.admin_chat = []
+        st.session_state.admin_conversation_id = uuid.uuid4().hex
+        st.rerun()
+
+    resumed = admin_call("pending_chat_update_for", st.session_state.admin_conversation_id)
+    if resumed:
+        st.session_state.admin_chat.append({"role": "system", "content": t("resumed_after_approval")})
+        st.session_state.admin_chat.append({"role": "assistant", "response": resumed})
+
     prompt = None
     if not st.session_state.admin_chat:
         cols = st.columns(len(t("agents_examples")))
         for i, (col, example) in enumerate(zip(cols, t("agents_examples"))):
-            if col.button(example, key=f"agent_example_{i}", width="stretch"):
+            if col.button(example, key=f"agent_example_{i}{key_suffix}", width="stretch"):
                 prompt = example
 
-    with st.form("agent_form", clear_on_submit=True, border=False):
+    with st.form(f"agent_form{key_suffix}", clear_on_submit=True, border=False):
         typed = st.text_input(t("tab_agents"), placeholder=t("agents_placeholder"),
-                              label_visibility="collapsed")
-        if st.form_submit_button(t("send"), icon=":material/send:", type="primary"):
+                              label_visibility="collapsed", key=f"agent_input{key_suffix}")
+        if st.form_submit_button(t("send"), icon=":material/send:", type="primary",
+                                 key=f"agent_send{key_suffix}"):
             prompt = typed or prompt
 
     if prompt and prompt.strip():
         with st.spinner(t("thinking")):
             response = admin_call("ask", prompt.strip(), context={
                 "conversation_id": st.session_state.admin_conversation_id,
+                "preferred_language": lang(),
             })
         st.session_state.admin_chat.append({"role": "user", "content": prompt.strip()})
         st.session_state.admin_chat.append({"role": "assistant", "response": response})
+        st.rerun()   # redraw as a finished turn, not mid-spinner
 
-    for message in reversed(_pairs(st.session_state.admin_chat)):
+    for index, message in enumerate(reversed(_pairs(st.session_state.admin_chat))):
         user, reply = message
-        with st.chat_message("user", avatar=":material/person:"):
-            st.markdown(user["content"])
+        is_system = user.get("role") == "system"
+        with st.chat_message(user.get("role", "user"), avatar=":material/notifications:" if is_system else ":material/person:"):
+            st.markdown(plain(user["content"]))
         with st.chat_message("assistant", avatar=":material/hub:"):
             response = reply["response"] or {}
             results = response.get("result") or []
             if not results and response.get("error_message"):
                 st.error(response["error_message"])
+                continue
+            if len(results) > 1:
+                involved = ", ".join(AGENT_LABELS.get(r.get("agent_name"), {}).get(
+                    lang(), r.get("agent_name")) for r in results)
+                st.caption(f"{t('agents_involved')}: {involved}")
+                if response.get("summary"):   # the orchestrator's own account of the whole request
+                    st.markdown(plain(response["summary"]).replace("\n", "  \n"))
+            failed = [r for r in results if r.get("status") not in ("success", "paused", "waiting_for_input")]
+            if failed and len(failed) < len(results):
+                st.warning(t("partial_failure"))
             for result in results:
-                render_agent_result(result)
+                render_agent_result(result, key_suffix=f"{key_suffix}_{index}")
 
 
 def _pairs(messages: list[dict]) -> list[tuple[dict, dict]]:
@@ -1273,6 +1635,7 @@ def status_badges(tender: dict) -> str:
 
 def dashboard_tab() -> None:
     """Approved tenders, searchable (brief requirement 16), with their applications."""
+    section_header(":material/dashboard:", "tab_dashboard")
     filters = tender_filters("dashboard")
     sub_col, app_col = st.columns(2)
     submission = sub_col.selectbox(
@@ -1286,9 +1649,9 @@ def dashboard_tab() -> None:
     if not rows:
         st.info(t("no_dashboard"))
         return
-    columns = ["title", "organization", "country", "training_category", "deadline",
-               "submission_status", "application_status", "submitted_at", "submission_reference",
-               "qualification_status", "review_status", "submission_url", "source_url"]
+    # The columns an admin scans for; every other detail is in each tender's own panel below.
+    columns = ["title", "organization", "country", "deadline", "submission_status", "application_status",
+               "submission_reference", "submission_url", "source_url"]
     st.dataframe(
         [{c: (row.get(c) if c != "source_url" else _web_link(row.get("source_url") or row.get("url")))
           for c in columns} for row in rows],
@@ -1297,7 +1660,7 @@ def dashboard_tab() -> None:
                        "source_url": st.column_config.LinkColumn(t("open_source"))},
     )
     for row in rows:
-        with st.expander(plain(row.get("title"))):
+        with st.expander(plain(row.get("title")), expanded=row["opportunity_id"] == st.session_state.get("open_tender")):
             st.markdown(tender_badges(row, with_status=False) + status_badges(row), unsafe_allow_html=True)
             tender_details(row)
             application_panel(row)
@@ -1323,16 +1686,78 @@ def application_panel(tender: dict) -> None:
             st.error(f"{t('attempt_error')}: {plain(latest['error'])}")
         email = (latest["confirmation"] or {}).get("prepared_email")
         if email:
+            draft = admin_call("current_email_draft", opp_id)
+            send_record = next(
+                (s for s in history["email_sends"] if s["attempt_no"] == latest["attempt_no"]), None)
+
+            mode_info = admin_call("email_sending_mode")
+            # The address it will ACTUALLY go to, in every mode, enforced by the backend (email_sending.py).
+            actual_to = mode_info["recipient"]
             with st.container(border=True):
                 st.markdown(f"**{t('prepared_email')}**")
-                st.markdown(f"**{t('to')}:** {plain(email['to'])} · **{t('from')}:** {plain(email['from'])}")
-                st.markdown(f"**{t('subject')}:** {plain(email['subject'])}")
-                st.text(email["body"])
+                if draft.get("is_demo_profile"):
+                    st.warning(t("demo_profile_email_warning"))
+                st.markdown(f"**{t('will_send_to')}:** {plain(actual_to or '—')} · "
+                            f"**{t('from')}:** {plain(draft['from'] or '—')}")
+                st.caption(f"{t('tender_contact')}: {plain(draft['to'] or t('no_verified_contact'))} "
+                           f"({t('tender_contact_unused')})")
                 st.markdown(f"**{t('attachments')}:** " + "; ".join(
-                    plain(a["file_name"]) for a in email["attachments"]))
+                    plain(a["file_name"]) for a in draft["attachments"]))
                 recommended = latest["confirmation"].get("recommended_documents_missing")
                 if recommended:
                     st.caption(f"{t('recommended_missing')}: " + ", ".join(plain(r) for r in recommended))
+
+                if send_record:
+                    st.markdown(f"**{t('subject')}:** {plain(draft['subject'])}")
+                    st.text(draft["body"])
+                else:
+                    if draft.get("edited"):
+                        st.caption(t("draft_edited_note").format(
+                            by=plain(draft["draft_updated_by"]), at=plain(draft["draft_updated_at"][:19])))
+                    with st.form(f"edit_email_{opp_id}", border=False):
+                        subject = st.text_input(t("subject"), value=draft["subject"],
+                                                key=f"edit_subject_{opp_id}")
+                        body = st.text_area(t("body"), value=draft["body"], height=260,
+                                            key=f"edit_body_{opp_id}")
+                        save_col, discard_col = st.columns(2)
+                        if save_col.form_submit_button(t("save_draft_email"), key=f"save_draft_{opp_id}"):
+                            if admin_action("save_email_draft", opp_id, subject, body):
+                                st.session_state.flash = t("done")
+                                st.rerun()
+                        if draft.get("edited") and discard_col.form_submit_button(
+                            t("discard_draft_email"), key=f"discard_draft_{opp_id}",
+                        ):
+                            if admin_action("discard_email_draft", opp_id):
+                                st.session_state.flash = t("done")
+                                st.rerun()
+
+            if send_record:
+                if send_record["status"] == "sent":
+                    st.success(t("email_sent_summary").format(
+                        to=plain(send_record["recipient"]), at=plain(send_record["created_at"][:19])))
+                    if send_record["recipient"] != send_record.get("intended_recipient"):
+                        st.caption(t("email_redirected_note").format(
+                            real=plain(send_record["intended_recipient"])))
+                else:
+                    st.error(t("email_send_failed").format(error=plain(send_record.get("error") or "")))
+            else:
+                if not mode_info["recipient_configured"]:
+                    st.error(t("recipient_not_configured"))
+                elif not tender["submission_authorized"]:
+                    st.info(t("authorise_to_send"))
+                else:
+                    with st.form(f"send_email_{opp_id}", border=True):
+                        if mode_info["is_production"]:
+                            st.warning(t("send_production_warning").format(recipient=plain(actual_to)))
+                        else:
+                            st.info(t("send_test_email_help").format(recipient=plain(actual_to)))
+                        confirmed = st.checkbox(t("confirm_send"), key=f"confirm_send_{opp_id}")
+                        if st.form_submit_button(t("send_now"), key=f"send_now_{opp_id}", type="primary"):
+                            if not confirmed:
+                                st.error(t("need_confirm"))
+                            elif admin_action("send_application_email", opp_id):
+                                st.session_state.flash = t("done")
+                                st.rerun()
 
     actions = st.columns(3)
     if not tender["submission_authorized"] and submission != "submitted":
@@ -1404,16 +1829,23 @@ def outcome_form(opp_id: str, current: str) -> None:
 
 def profile_tab() -> None:
     """The academy's real details and documents (never invented)."""
+    section_header(":material/business:", "tab_profile")
     st.caption(t("profile_intro"))
     profile = admin_call("application_profile")
     labels = t("field_label")
 
     with st.form("profile_form", border=True):
         values = {}
+        short_fields = [f for f in profile["field_labels"] if f not in LONG_PROFILE_FIELDS]
+        long_fields = [f for f in profile["field_labels"] if f in LONG_PROFILE_FIELDS]
         columns = st.columns(2)
-        for i, field in enumerate(profile["field_labels"]):
+        for i, field in enumerate(short_fields):
             values[field] = columns[i % 2].text_input(
                 labels.get(field, field), value=profile["fields"].get(field, ""), key=f"profile_{field}")
+        for field in long_fields:
+            values[field] = st.text_area(
+                labels.get(field, field), value=profile["fields"].get(field, ""), key=f"profile_{field}",
+                height=120)
         if st.form_submit_button(t("save_profile"), type="primary", key="save_profile"):
             if admin_action("update_application_profile", values):
                 st.session_state.flash = t("done")
@@ -1443,6 +1875,7 @@ def profile_tab() -> None:
 
 def curricula_tab() -> None:
     """Agent 3's curricula: read a version, download its PDF, approve or request changes."""
+    section_header(":material/school:", "tab_curricula")
     st.caption(t("curricula_intro"))
     labels = t("cur_status")
     counts = admin_call("curriculum_counts")
@@ -1460,26 +1893,84 @@ def curricula_tab() -> None:
     for row in rows:
         title = (f"{plain(row['title'])} · v{row['current_version']} · {row.get('total_hours') or '?'} h · "
                  f"{(row.get('language') or '').upper()} · {labels.get(row['status'], row['status'])}")
-        with st.expander(title):
+        with st.expander(title, expanded=row["curriculum_id"] == st.session_state.get("open_curriculum")):
             curriculum_panel(row)
 
 
-def curriculum_panel(row: dict) -> None:
+def curriculum_panel(row: dict, show_companion_toggle: bool = True, key_suffix: str = "") -> None:
+    """
+    key_suffix: only used for a bilingual companion shown side by side
+    with the curriculum the admin actually opened -- that companion also
+    has its OWN top-level expander elsewhere in this tab's listing, so
+    its widgets here need different keys to avoid colliding with it.
+    """
     curriculum_id = row["curriculum_id"]
     labels = t("cur_status")
+
+    if show_companion_toggle:
+        companion_id = admin_call("curriculum_translation", curriculum_id)
+        if companion_id:
+            st.caption(t("cur_bilingual_companion").format(id=companion_id))
+            if st.checkbox(t("cur_show_side_by_side"), key=f"cur_side_by_side_{curriculum_id}"):
+                companion_row = next((r for r in admin_call("list_curricula")
+                                     if r["curriculum_id"] == companion_id), None)
+                left, right = st.columns(2)
+                with left:
+                    curriculum_panel(row, show_companion_toggle=False)
+                if companion_row:
+                    with right:
+                        curriculum_panel(companion_row, show_companion_toggle=False, key_suffix="_companion")
+                return
     versions = [v["version"] for v in admin_call("get_curriculum", curriculum_id)["versions"]]
     version = st.selectbox(
         # The key includes the current version: after a revision the selector shows the new version
         # instead of staying on the one chosen before.
-        t("cur_version"), list(reversed(versions)), key=f"cur_version_{curriculum_id}_{row['current_version']}",
+        t("cur_version"), list(reversed(versions)),
+        key=f"cur_version_{curriculum_id}_{row['current_version']}{key_suffix}",
         format_func=lambda v: f"v{v}" + (f" ({t('cur_current')})" if v == row["current_version"] else ""))
     detail = admin_call("get_curriculum", curriculum_id, version)
     record = detail["curriculum"]
     content = record["content"]
     version_status = record.get("version_status") or record["status"]
 
+    # The decision first: status, what (if anything) blocks approval, the review actions, the downloads.
     st.markdown(badge(f"cur-{version_status}", labels.get(version_status, version_status))
-                + f" `{curriculum_id}`", unsafe_allow_html=True)
+                + f" `{curriculum_id}` · v{version}", unsafe_allow_html=True)
+    errors = (record.get("validation") or {}).get("errors") or []
+    if errors:
+        st.warning(t("cur_validation_bad") + "\n" + "\n".join(f"- {plain(e.get('message'))}" for e in errors))
+    else:
+        st.success(t("cur_validation_ok"))
+
+    reviewable = version == row["current_version"] and record["status"] == "pending_review"
+    if reviewable:
+        with st.form(f"cur_review_{curriculum_id}{key_suffix}", border=True):
+            notes = st.text_area(t("cur_notes"), key=f"cur_notes_{curriculum_id}{key_suffix}")
+            approve, changes = st.columns(2)
+            if approve.form_submit_button(t("cur_approve"), type="primary", icon=":material/check:",
+                                          key=f"cur_approve_{curriculum_id}{key_suffix}"):
+                if admin_action("approve_curriculum", curriculum_id, version, notes or None):
+                    st.session_state.flash = t("cur_approved_msg")
+                    st.rerun()
+            if changes.form_submit_button(t("cur_request_changes"), icon=":material/edit_note:",
+                                          key=f"cur_changes_{curriculum_id}{key_suffix}"):
+                if admin_action("request_curriculum_changes", curriculum_id, version, notes):
+                    st.session_state.flash = t("cur_changes_msg")
+                    st.rerun()
+    else:
+        st.caption(t("cur_why_not_reviewable").get(version_status if version == row["current_version"] else "old",
+                                                   t("cur_not_reviewable")))
+
+    head = record if version == row["current_version"] else admin_call("get_curriculum", curriculum_id)["curriculum"]
+    approved_pdf_button(curriculum_id, head, f"cur_pdf_{curriculum_id}{key_suffix}")
+    companion = admin_call("curriculum_translation", curriculum_id)
+    if companion:
+        companion_head = admin_call("get_curriculum", companion)
+        if companion_head:
+            bilingual_zip_button(curriculum_id, [head, companion_head["curriculum"]],
+                                 f"cur_zip_{curriculum_id}{key_suffix}")
+
+    st.divider()
     if content.get("overview"):
         st.markdown(plain(content["overview"]))
     meta_labels = t("cur_meta")
@@ -1505,15 +1996,9 @@ def curriculum_panel(row: dict) -> None:
     st.markdown(f"**{t('cur_capstone')}:** " + (f"{plain(capstone.get('title'))} — {plain(capstone.get('description'))}"
                                                if isinstance(capstone, dict) else t("cur_no_capstone")))
 
-    errors = (record.get("validation") or {}).get("errors") or []
-    if errors:
-        st.warning(t("cur_validation_bad") + "\n" + "\n".join(f"- {plain(e.get('message'))}" for e in errors))
-    else:
-        st.success(t("cur_validation_ok"))
-
-    st.markdown(f"**{t('cur_alignment')}**")
     alignment = content.get("alignment") or {}
     if alignment.get("items"):
+        st.markdown(f"**{t('cur_alignment')}**")
         framework = alignment.get("framework") or {}
         st.caption(plain(f"{framework.get('name')} — {framework.get('publisher')}, {framework.get('version')}"))
         st.dataframe([{"Requirement": f"{i['requirement_id']}: {i.get('requirement') or ''}", "Result": i["status"],
@@ -1524,44 +2009,100 @@ def curriculum_panel(row: dict) -> None:
         st.caption(t("cur_no_alignment"))
 
     references = content.get("references") or []
-    st.markdown(f"**{t('cur_references')}**")
-    st.markdown("\n".join(f"- {plain(r.get('title'))} — {plain(r.get('url'))}" for r in references)
-                or t("cur_no_references"))
+    if references:
+        st.markdown(f"**{t('cur_references')}**")
+        st.markdown("\n".join(f"- {plain(r.get('title'))} — {plain(r.get('url'))}" for r in references))
+    else:
+        st.caption(t("cur_no_references"))
     if content.get("assumptions"):
         st.markdown(f"**{t('cur_assumptions')}**")
         st.markdown("\n".join(f"- {plain(a)}" for a in content["assumptions"]))
 
-    has_pdf = any(d["version"] == version for d in detail["documents"])
-    if has_pdf:
-        pdf = admin_call("curriculum_pdf", curriculum_id, version)
-        st.download_button(t("cur_pdf_download"), pdf["data"], file_name=pdf["filename"], mime="application/pdf",
-                           icon=":material/download:", key=f"cur_pdf_{curriculum_id}_{version}")
-    elif st.button(t("cur_pdf_create"), icon=":material/picture_as_pdf:", key=f"cur_pdf_make_{curriculum_id}_{version}"):
-        if admin_action("curriculum_pdf", curriculum_id, version):
-            st.rerun()
-
-    reviewable = version == row["current_version"] and record["status"] == "pending_review"
-    st.markdown(f"**{t('cur_review')}**")
-    if not reviewable:
-        st.caption(t("cur_not_reviewable"))
-    else:
-        with st.form(f"cur_review_{curriculum_id}", border=True):
-            notes = st.text_area(t("cur_notes"), key=f"cur_notes_{curriculum_id}")
-            approve, changes = st.columns(2)
-            if approve.form_submit_button(t("cur_approve"), type="primary", icon=":material/check:",
-                                          key=f"cur_approve_{curriculum_id}"):
-                if admin_action("approve_curriculum", curriculum_id, version, notes or None):
-                    st.session_state.flash = t("cur_approved_msg")
-                    st.rerun()
-            if changes.form_submit_button(t("cur_request_changes"), icon=":material/edit_note:",
-                                          key=f"cur_changes_{curriculum_id}"):
-                if admin_action("request_curriculum_changes", curriculum_id, version, notes):
-                    st.session_state.flash = t("cur_changes_msg")
-                    st.rerun()
+    curriculum_edit_form(curriculum_id, row, version, content, key_suffix)
 
     if detail["audit"]:
-        with st.expander(t("cur_audit")):
+        with st.expander(t("cur_audit"), key=f"cur_audit_{curriculum_id}{key_suffix}"):
             st.dataframe(list(reversed(detail["audit"])), hide_index=True, width="stretch")
+
+
+def curriculum_edit_form(curriculum_id: str, row: dict, version: int, content: dict, key_suffix: str) -> None:
+    """
+    A structured editor (no raw JSON) for the current version's content,
+    saved as a new version (agents/admin_service.py's edit_curriculum,
+    agents/curriculum_research/editing.py's text <-> content
+    conversion): the original and every earlier version stay exactly as
+    they were, and the new version always needs its own approval, even
+    when the version it was edited from was already approved.
+    """
+    editable = version == row["current_version"]
+    with st.expander(t("cur_edit"), key=f"cur_edit_expander_{curriculum_id}{key_suffix}"):
+        if not editable:
+            st.caption(t("cur_edit_only_current"))
+            return
+        with st.form(f"cur_edit_{curriculum_id}{key_suffix}", border=False):
+            title = st.text_input(t("cur_edit_title"), value=content.get("title", ""),
+                                  key=f"cur_edit_title_{curriculum_id}{key_suffix}")
+            overview = st.text_area(t("cur_edit_overview"), value=content.get("overview", ""),
+                                    key=f"cur_edit_overview_{curriculum_id}{key_suffix}")
+            audience = st.text_input(t("cur_edit_audience"), value=content.get("target_audience", ""),
+                                     key=f"cur_edit_audience_{curriculum_id}{key_suffix}")
+            prerequisites = st.text_area(
+                t("cur_edit_prerequisites"), value=curriculum_editing.format_lines(content.get("prerequisites") or []),
+                help=t("cur_edit_one_per_line"), key=f"cur_edit_prereq_{curriculum_id}{key_suffix}")
+            objectives = st.text_area(
+                t("cur_edit_objectives"), value=curriculum_editing.format_lines(content.get("objectives") or []),
+                help=t("cur_edit_one_per_line"), key=f"cur_edit_objectives_{curriculum_id}{key_suffix}")
+            outcomes = st.text_area(
+                t("cur_edit_outcomes"), value=curriculum_editing.format_outcomes(content.get("learning_outcomes") or []),
+                help=t("cur_edit_outcomes_help"), key=f"cur_edit_outcomes_{curriculum_id}{key_suffix}")
+            modules = st.text_area(
+                t("cur_edit_modules"), value=curriculum_editing.format_modules(content.get("modules") or []),
+                height=260, help=t("cur_edit_modules_help"), key=f"cur_edit_modules_{curriculum_id}{key_suffix}")
+            assessments = st.text_area(
+                t("cur_edit_assessments"), value=curriculum_editing.format_assessments(content.get("assessments") or []),
+                help=t("cur_edit_assessments_help"), key=f"cur_edit_assessments_{curriculum_id}{key_suffix}")
+            capstone_current = curriculum_editing.capstone_fields(content.get("capstone"))
+            include_capstone = st.checkbox(t("cur_edit_include_capstone"), value=bool(content.get("capstone")),
+                                           key=f"cur_edit_has_capstone_{curriculum_id}{key_suffix}")
+            capstone_title = st.text_input(t("cur_edit_capstone_title"), value=capstone_current["title"],
+                                           key=f"cur_edit_capstone_title_{curriculum_id}{key_suffix}")
+            capstone_description = st.text_area(t("cur_edit_capstone_description"), value=capstone_current["description"],
+                                                key=f"cur_edit_capstone_desc_{curriculum_id}{key_suffix}")
+            capstone_outcomes = st.text_input(t("cur_edit_capstone_outcomes"), value=capstone_current["outcome_ids"],
+                                              key=f"cur_edit_capstone_outcomes_{curriculum_id}{key_suffix}")
+            capstone_deliverables = st.text_area(
+                t("cur_edit_capstone_deliverables"), value=capstone_current["deliverables"],
+                help=t("cur_edit_one_per_line"), key=f"cur_edit_capstone_deliverables_{curriculum_id}{key_suffix}")
+            tools_resources = st.text_area(
+                t("cur_edit_tools"), value=curriculum_editing.format_lines(content.get("tools_resources") or []),
+                help=t("cur_edit_one_per_line"), key=f"cur_edit_tools_{curriculum_id}{key_suffix}")
+            assumptions = st.text_area(
+                t("cur_edit_assumptions"), value=curriculum_editing.format_lines(content.get("assumptions") or []),
+                help=t("cur_edit_one_per_line"), key=f"cur_edit_assumptions_{curriculum_id}{key_suffix}")
+            if st.form_submit_button(t("cur_save_edit"), icon=":material/save:",
+                                     key=f"cur_save_edit_{curriculum_id}{key_suffix}"):
+                edits = {
+                    "title": title.strip(), "overview": overview.strip(), "target_audience": audience.strip(),
+                    "prerequisites": curriculum_editing.parse_lines(prerequisites),
+                    "objectives": curriculum_editing.parse_lines(objectives),
+                    "learning_outcomes": curriculum_editing.parse_outcomes(outcomes, []),
+                    "modules": curriculum_editing.parse_modules(modules),
+                    "assessments": curriculum_editing.parse_assessments(assessments),
+                    "capstone": curriculum_editing.parse_capstone(
+                        include_capstone, capstone_title, capstone_description, capstone_outcomes,
+                        capstone_deliverables),
+                    "tools_resources": curriculum_editing.parse_lines(tools_resources),
+                    "assumptions": curriculum_editing.parse_lines(assumptions),
+                }
+                try:
+                    saved = admin_call("edit_curriculum", curriculum_id, edits)
+                except (ValueError, KeyError) as exc:
+                    st.error(str(exc).strip("'\""))
+                else:
+                    # The new version is re-validated: say so when it is still a draft, never "pending review".
+                    st.session_state.flash = t("cur_edit_saved_msg" if saved["status"] == "pending_review"
+                                               else "cur_edit_saved_draft_msg")
+                    st.rerun()
 
 
 DOCUMENTS_PER_PAGE = 25
@@ -1569,6 +2110,7 @@ DOCUMENTS_PER_PAGE = 25
 
 def documents_tab() -> None:
     """Agent 4's documents: generate from an approved curriculum, edit, approve, download."""
+    section_header(":material/description:", "tab_documents")
     st.caption(t("doc_intro"))
     labels = t("doc_status")
     counts = admin_call("document_counts")
@@ -1771,6 +2313,7 @@ CAMPAIGNS_PER_PAGE = 25
 
 def marketing_tab() -> None:
     """Agent 5's campaigns: write from an approved course, review, edit, approve, download. Nothing is ever sent."""
+    section_header(":material/campaign:", "tab_marketing")
     st.caption(t("mk_intro"))
     labels = t("mk_status")
     counts = admin_call("campaign_counts")
@@ -1971,35 +2514,80 @@ def marketing_composer_label(name: str) -> str:
 
 
 def audit_tab() -> None:
-    trail = admin_call("audit_trail")
-    if not trail:
+    """Every audited decision across tenders, curricula, documents and campaigns, newest first."""
+    section_header(":material/history:", "tab_audit")
+    st.caption(t("audit_intro"))
+    areas = t("audit_areas")
+    area = st.segmented_control(t("audit_area"), [None, *areas], key="audit_area", label_visibility="collapsed",
+                                format_func=lambda a: t("all") if a is None else areas[a])
+    rows = [r for r in admin_call("activity_log") if area is None or r["area"] == area]
+    if not rows:
         st.info(t("no_audit"))
-        return
-    st.dataframe(list(reversed(trail)), hide_index=True, width="stretch")
+    else:
+        columns = t("audit_columns")
+        st.dataframe([{columns[k]: (areas.get(v, v) if k == "area" else (v[:19].replace("T", " ") if k == "when" else v))
+                       for k, v in row.items()} for row in rows], hide_index=True, width="stretch")
+    trail = admin_call("audit_trail")
+    if trail:
+        with st.expander(t("audit_tender_detail")):
+            st.dataframe(list(reversed(trail)), hide_index=True, width="stretch")
 
 
-def admin_view() -> None:
-    admin = get_admin_service()
-    if not admin.is_valid(st.session_state.admin_token):
-        st.session_state.admin_token = None
-        go_home(t("session_expired"))
+def floating_assistant() -> None:
+    """
+    The REX AI chatbot launcher: a popover, available from every section,
+    that opens the EXACT SAME Ask Agents conversation (same orchestrator
+    call, same session_state.admin_chat) in a floating panel. A popover
+    is an overlay, not a navigation action, so opening or closing it
+    never changes st.session_state.view or st.session_state.admin_section.
+    """
+    with st.popover(t("floating_chat_label"), icon=":material/smart_toy:", width="stretch"):
+        agents_tab(key_suffix="_floating")
 
-    top_bar()
-    header, action = st.columns([3, 2], vertical_alignment="center")
-    with header:
-        st.markdown(f'<div class="rex-title"><h2>{t("dashboard")}</h2></div>',
-                    unsafe_allow_html=True)
-    with action:
-        if st.button(t("sign_out"), icon=":material/logout:", key="sign_out"):
-            admin.logout(st.session_state.admin_token)
+
+# The nine admin sections, in sidebar order: (key, icon, title key).
+ADMIN_SECTIONS = [
+    ("review", ":material/fact_check:", "tab_review"),
+    ("search", ":material/travel_explore:", "tab_search"),
+    ("agents", ":material/forum:", "tab_agents"),
+    ("dashboard", ":material/dashboard:", "tab_dashboard"),
+    ("curricula", ":material/school:", "tab_curricula"),
+    ("documents", ":material/description:", "tab_documents"),
+    ("marketing", ":material/campaign:", "tab_marketing"),
+    ("profile", ":material/business:", "tab_profile"),
+    ("audit", ":material/history:", "tab_audit"),
+]
+
+
+def _go_section(section: str) -> None:
+    st.session_state.admin_section = section
+
+
+def admin_sidebar() -> None:
+    """
+    The admin's navigation. The active section is server-side session state
+    (admin_section), changed ONLY by these buttons or an explicit "open in"
+    action -- never by an approval, a save, a download, the language switch
+    or the floating assistant. (The nine sections used to be st.tabs, whose
+    selected tab lived only in the browser: any message shown above them
+    after an action moved them on the page, and the browser re-opened the
+    first tab, Tender review.)
+    """
+    with st.sidebar:
+        st.markdown("### REX AI")
+        st.caption(t("dashboard"))
+        for key, icon, title_key in ADMIN_SECTIONS:
+            st.button(t(title_key), icon=icon, key=f"nav_{key}", width="stretch",
+                      type="primary" if st.session_state.admin_section == key else "tertiary",
+                      on_click=_go_section, args=(key,))
+        st.divider()
+        if st.button(t("sign_out"), icon=":material/logout:", key="sign_out", width="stretch"):
+            get_admin_service().logout(st.session_state.admin_token)
             st.session_state.admin_token = None
             go_home()
 
-    if st.session_state.flash:
-        st.success(st.session_state.flash)
-        st.session_state.flash = None
-    alerts_banner()
-    counts = admin_call("tender_counts")
+
+def tender_metrics(counts: dict) -> None:
     metrics = st.columns(6)
     metrics[0].metric(t("pending"), counts["pending"])
     metrics[1].metric(t("flagged_pending"), counts["flagged_pending"])
@@ -2008,28 +2596,44 @@ def admin_view() -> None:
     metrics[4].metric(t("metric_applied"), counts["applied"])
     metrics[5].metric(t("rejected"), counts["rejected"])
 
-    review, search, agents, dashboard, curricula, documents, marketing, profile, audit = st.tabs([
-        t("tab_review"), t("tab_search"), t("tab_agents"), t("tab_dashboard"), t("tab_curricula"),
-        t("tab_documents"), t("tab_marketing"), t("tab_profile"), t("tab_audit"),
-    ])
-    with review:
-        review_tab(counts)
-    with search:
-        search_tab()
-    with agents:
-        agents_tab()
-    with dashboard:
-        dashboard_tab()
-    with curricula:
-        curricula_tab()
-    with documents:
-        documents_tab()
-    with marketing:
-        marketing_tab()
-    with profile:
-        profile_tab()
-    with audit:
-        audit_tab()
+
+def _review_section() -> None:
+    counts = admin_call("tender_counts")
+    tender_metrics(counts)
+    review_tab(counts)
+
+
+def _dashboard_section() -> None:
+    tender_metrics(admin_call("tender_counts"))
+    dashboard_tab()
+
+
+SECTION_VIEWS = {
+    "review": _review_section, "search": lambda: search_tab(), "agents": lambda: agents_tab(),
+    "dashboard": _dashboard_section, "curricula": lambda: curricula_tab(), "documents": lambda: documents_tab(),
+    "marketing": lambda: marketing_tab(), "profile": lambda: profile_tab(), "audit": lambda: audit_tab(),
+}
+
+
+def admin_view() -> None:
+    admin = get_admin_service()
+    if not admin.is_valid(st.session_state.admin_token):
+        st.session_state.admin_token = None
+        go_home(t("session_expired"))
+
+    section = st.session_state.admin_section if st.session_state.admin_section in SECTION_VIEWS else "review"
+    admin_sidebar()
+    top_bar()
+    if section != "agents":   # in Ask agents the same chat is already the page itself
+        _, launcher = st.columns([4, 1], vertical_alignment="center")
+        with launcher:
+            floating_assistant()
+
+    if st.session_state.flash:
+        st.success(st.session_state.flash)
+        st.session_state.flash = None
+    alerts_banner()
+    SECTION_VIEWS[section]()
 
 
 # --------------------------------------------------------------------

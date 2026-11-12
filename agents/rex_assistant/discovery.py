@@ -216,6 +216,19 @@ def _match_closed_set(text: str, patterns) -> Optional[str]:
     return None
 
 
+_NEGATION = r"(?:\b(?:not|no|without)|مش|لا|بدون)\s+(?:an?\s+)?"
+
+
+def _mode_named(normalized: str, mode: str, negated: bool) -> bool:
+    """Whether the reply names this delivery mode (and, with negated=False, not as "not <mode>")."""
+    phrases = next(p for name, p in _PREFERENCE_PATTERNS if name == mode)
+    if not _has_phrase(normalized, phrases):
+        return False
+    alternatives = "|".join(re.escape(_norm(p)) for p in phrases)
+    plain = re.sub(_NEGATION + f"(?:{alternatives})", " ", normalized)
+    return negated or _has_phrase(plain, phrases)
+
+
 def normalize_answer(field: str, text: str) -> Optional[str]:
     """
     The value to store for `field` from a reply, or None when the reply
@@ -232,7 +245,16 @@ def normalize_answer(field: str, text: str) -> Optional[str]:
         return None
 
     if field == "training_preference":
-        return _match_closed_set(value, _PREFERENCE_PATTERNS)
+        choice = _match_closed_set(value, _PREFERENCE_PATTERNS)
+        if choice in ("online", "offline"):
+            # Both modes named: "Online or offline" / "أونلاين أو حضوري" means either is
+            # fine; "offline, not online" means the one not negated.
+            wanted = [mode for mode in ("online", "offline") if _mode_named(normalized, mode, negated=False)]
+            if len(wanted) == 2:
+                return "no_preference"
+            if len(wanted) == 1:
+                return wanted[0]
+        return choice
 
     if field == "skill_level":
         return _match_closed_set(value, _SKILL_PATTERNS)
