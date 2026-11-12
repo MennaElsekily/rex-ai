@@ -130,15 +130,17 @@ def _wrong_language_fields(curriculum: dict[str, Any], language: str) -> list[st
     Fields written mostly in the other language. Short texts (under 20
     letters, e.g. "Power BI") are skipped: technical terms stay as they are.
     """
-    wrong = []
-    for path, text in _text_fields(curriculum):
-        letters = len(_ARABIC_LETTER.findall(text)) + len(_LATIN_LETTER.findall(text))
-        if letters < 20:
-            continue
-        ratio = _language_ratio(text)
-        if (language == "ar" and ratio < 0.25) or (language == "en" and ratio > 0.5):
-            wrong.append(path)
-    return wrong
+    return [path for path, text in _text_fields(curriculum) if is_wrong_language(text, language)]
+
+
+def is_wrong_language(text: str, language: str) -> bool:
+    """True if a text of 20+ letters is written mostly in the other language."""
+    text = str(text or "")
+    letters = len(_ARABIC_LETTER.findall(text)) + len(_LATIN_LETTER.findall(text))
+    if letters < 20:
+        return False
+    ratio = _language_ratio(text)
+    return (language == "ar" and ratio < 0.25) or (language == "en" and ratio > 0.5)
 
 
 def _language_ratio(text: str) -> float:

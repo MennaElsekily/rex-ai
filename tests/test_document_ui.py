@@ -36,9 +36,9 @@ def make_document(toolbox, approve_curriculum=True):
 
 
 def test_documents_tab_is_there_and_empty_without_approved_curricula(env):
-    at = unlock(start())
+    at = unlock(start(), section="documents")
 
-    assert "Documents" in [tab.label for tab in at.tabs]
+    assert "Documents" in [b.label for b in at.sidebar.button]
     assert any("No curriculum is approved yet" in i.value for i in at.info)
     assert any("No documents yet" in i.value for i in at.info)
 
@@ -48,7 +48,7 @@ def test_documents_tab_offers_the_form_when_a_curriculum_is_approved(env, defaul
     cid = default_toolbox.curricula.list()[0]["curriculum_id"]
     default_toolbox.curricula.approve(cid, 1, ADMIN)
 
-    at = unlock(start())
+    at = unlock(start(), section="documents")
 
     assert not at.exception
     assert [s.label for s in at.selectbox if s.key == "doc_type"]
@@ -62,7 +62,7 @@ def test_generating_from_the_form_asks_the_document_agent_with_the_choices(env, 
         "agent_name": "document_generation", "status": "success",
         "result": {"kind": "document", "message": "Course Description generated."}}]}
 
-    at = unlock(start())
+    at = unlock(start(), section="documents")
     at.text_input(key="doc_extra_format").input("Blended")
     at.button[[b.label for b in at.button].index("Generate document")].click().run()
 
@@ -76,7 +76,7 @@ def test_generating_from_the_form_asks_the_document_agent_with_the_choices(env, 
 
 def test_review_edit_and_approve_in_the_tab(env, default_toolbox):
     cid, document_id = make_document(default_toolbox)
-    at = unlock(start())
+    at = unlock(start(), section="documents")
     assert any(document_id in m.value for m in at.markdown)
     assert any("Not specified in the curriculum" in w.value for w in at.warning)
 
@@ -101,7 +101,7 @@ def test_the_tab_is_available_in_arabic(env, default_toolbox):
     make_document(default_toolbox)
     at = start()
     at.session_state["lang"] = "ar"
-    unlock(at)
+    unlock(at, section="documents")
 
     assert not at.exception
-    assert "الوثائق" in [tab.label for tab in at.tabs]
+    assert "الوثائق" in [b.label for b in at.sidebar.button]

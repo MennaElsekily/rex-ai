@@ -1,6 +1,7 @@
 """
-REX's course filter (agents/rex_assistant/course_context.course_filter)
-against a real Chroma collection created in a temporary folder -- never
+The RAG service's course filter (knowledge_base/evidence.field_course_filter;
+moved from REX, which no longer builds database filters) against a real
+Chroma collection created in a temporary folder -- never
 the knowledge-base index. Generalization check T4: ingestion stores a
 numeric course id as a number, and Chroma compares types strictly.
 """
@@ -8,8 +9,11 @@ numeric course id as a number, and Chroma compares types strictly.
 import chromadb
 import pytest
 
-from agents.rex_assistant.course_context import course_filter
-from knowledge_base.evidence import _check_filter
+from knowledge_base.evidence import _check_filter, field_course_filter
+
+
+def course_filter(courses):
+    return field_course_filter([c["course_id"] for c in courses])
 from knowledge_base.metadata_extractor import normalize_field_value
 
 

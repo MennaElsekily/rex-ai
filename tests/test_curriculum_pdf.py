@@ -7,6 +7,7 @@ and validation sections, and the render tool (safe names, checksums).
 
 import hashlib
 import io
+import re
 import unicodedata
 
 import pytest
@@ -159,13 +160,43 @@ def test_the_alignment_table_and_gaps_are_printed():
 def test_the_render_tool_stores_a_safe_named_file_with_its_checksum(tmp_path):
     tools = in_process_tools(tmp_path)
     saved = tools.save_curriculum_draft(valid_curriculum("ar"), topic="ml")
+    tools.store.approve(saved["curriculum_id"], 1, "admin-test")
 
     result = tools.render_curriculum_pdf(saved["curriculum_id"])
 
     document = result["document"]
     assert result["status"] == "ok"
-    assert document["filename"] == f"{saved['curriculum_id']}_v1_ar.pdf" and document["pages"] >= 2
+    assert re.fullmatch(rf"{saved['curriculum_id']}_v1_ar_[0-9a-f]{{8}}\.pdf", document["filename"])
+    assert document["pages"] >= 2
     data = tools.document_bytes(document["document_id"])
     assert data.startswith(b"%PDF") and hashlib.sha256(data).hexdigest() == document["sha256"]
     assert (tmp_path / "docs" / document["filename"]).is_file()
     assert tools.render_curriculum_pdf(saved["curriculum_id"], language="en")["status"] == "invalid_request"
+
+
+def test_no_pdf_is_rendered_for_a_version_that_is_not_approved(tmp_path):
+    tools = in_process_tools(tmp_path)
+    pending = tools.save_curriculum_draft(valid_curriculum("en"), topic="ml")
+    invalid = valid_curriculum("en")
+    invalid["learning_outcomes"][0]["statement"] = "The topic in general"
+    draft = tools.save_curriculum_draft(invalid, topic="ml")
+
+    for saved in (pending, draft):
+        result = tools.render_curriculum_pdf(saved["curriculum_id"])
+        assert result["status"] == "invalid_request" and "after an administrator approves" in result["message"]
+        assert tools.store.documents(saved["curriculum_id"]) == []
+    assert not (tmp_path / "docs").exists() or not any((tmp_path / "docs").iterdir())
+
+
+def test_every_render_gets_its_own_file_and_earlier_records_keep_theirs(tmp_path):
+    tools = in_process_tools(tmp_path)
+    cid = tools.save_curriculum_draft(valid_curriculum("en"), topic="ml")["curriculum_id"]
+    tools.store.approve(cid, 1, "admin-test")
+
+    first = tools.render_curriculum_pdf(cid)["document"]
+    first_bytes = tools.document_bytes(first["document_id"])
+    second = tools.render_curriculum_pdf(cid)["document"]
+
+    assert first["filename"] != second["filename"]
+    assert tools.document_bytes(first["document_id"]) == first_bytes   # never overwritten
+    assert hashlib.sha256(first_bytes).hexdigest() == first["sha256"]

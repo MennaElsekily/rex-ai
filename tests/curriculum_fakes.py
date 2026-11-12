@@ -128,6 +128,27 @@ def extras_answer(language: str = "en", source_ids: tuple[str, ...] = ()) -> dic
             "assumptions": [t["assumption"]], "open_questions": [t["question"]]}
 
 
+def translation_answer(language: str = "ar") -> Callable[[str], dict]:
+    """
+    A FakeLLM TranslationBatch answer for the bilingual companion
+    (agents/curriculum_research/bilingual.py): real text in `language`,
+    starting with a measurable action verb, so the translated curriculum
+    passes validation.py exactly as a real translation would.
+    """
+    import itertools
+    import re
+
+    verb = {"ar": "يطبق", "en": "Apply"}[language]
+    template = (f"{verb} مهارة رقم {{0}} في هذا البند التدريبي." if language == "ar"
+               else f"{verb} skill item {{0}} described in this training element.")
+    numbers = itertools.count(1)   # different source texts get different translations, as in a real one
+
+    def answer(prompt: str) -> dict:
+        count = int(re.search(r"exactly (\d+) translations", prompt).group(1))
+        return {"translations": [template.format(next(numbers)) for _ in range(count)]}
+    return answer
+
+
 def canned_answers(language: str = "en", hours: tuple[int, ...] = (10, 15, 15), **extra: Any) -> dict[str, Any]:
     """Answers for one valid generation (outline, module details, extras)."""
     answers = {"CurriculumOutline": outline_answer(language, hours),
@@ -135,6 +156,12 @@ def canned_answers(language: str = "en", hours: tuple[int, ...] = (10, 15, 15), 
                "CurriculumExtras": extras_answer(language)}
     answers.update(extra)
     return answers
+
+
+def bilingual_answers(language: str = "en", hours: tuple[int, ...] = (10, 15, 15), **extra: Any) -> dict[str, Any]:
+    """canned_answers(), plus a valid translation for the automatic bilingual companion (bilingual.py)."""
+    companion = "en" if language == "ar" else "ar"
+    return canned_answers(language, hours, TranslationBatch=translation_answer(companion), **extra)
 
 
 def in_process_tools(tmp_path, research_domains=None, search: Callable | None = None,
@@ -154,5 +181,5 @@ def in_process_tools(tmp_path, research_domains=None, search: Callable | None = 
 
 
 __all__ = ["CapstoneItem", "CurriculumExtras", "CurriculumOutline", "FakeLLM", "ModuleDetailList", "NewModule",
-           "NoModel", "RepairPatch", "RequestSlots", "SuggestionList", "canned_answers", "details_answer",
-           "extras_answer", "in_process_tools", "outline_answer"]
+           "NoModel", "RepairPatch", "RequestSlots", "SuggestionList", "bilingual_answers", "canned_answers",
+           "details_answer", "extras_answer", "in_process_tools", "outline_answer", "translation_answer"]

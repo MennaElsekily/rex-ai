@@ -97,6 +97,8 @@ _STRONG_INFO_EN = re.compile("|".join((
     r"\bhow long does (?:it|that|this) (?:take|last)\b",
     r"\bwhat (?:skills )?will i learn\b",
     r"\bwhat skills\b",
+    r"\btell me (?:more )?about (?!yoursel|you\b)",
+    r"\bmore (?:info|information|details) (?:about|on)\b",
 )))
 _STRONG_INFO_AR = ("متطلبات", "هتعلم ايه", "هاتعلم ايه", "مدته قد ايه", "مدتها قد ايه")
 
@@ -194,12 +196,16 @@ _WEAK_INFO_AR = (
 
 
 _LISTING_EN = re.compile(
-    rf"\b(?:which|what|list|show)\b.{{0,30}}\b{_COURSE_WORD}\b.{{0,30}}\b(?:available|offer(?:ed)?|have|there)\b"
-    rf"|\b(?:list|show)(?: me)?(?: all)?(?: the| your)? {_COURSE_WORD}\b"
-    rf"|\ball (?:the |your )?{_COURSE_WORD}\b"
+    rf"\b(?:which|what|list|show)\b.{{0,30}}\b{_COURSE_WORD}\b.{{0,30}}"
+    rf"\b(?:available|offer(?:s|ed)?|have|there|provide[sd]?|run)\b"
+    rf"|\b(?:list|show)(?: me)?(?: all)?(?: the| your)?(?: available)? (?:training )?{_COURSE_WORD}\b"
+    rf"|\ball (?:the |your |of your )?(?:available )?(?:training )?{_COURSE_WORD}\b"
+    rf"|\bdo you (?:have|offer|provide|run) (?:any )?(?:training )?{_COURSE_WORD}\b"
 )
 _LISTING_AR = ("الكورسات المتاحه", "الدورات المتاحه", "ايه الكورسات", "ايه الدورات",
-               "كل الكورسات", "كل الدورات", "ما هي الدورات", "ما هي الكورسات", "الدورات الموجوده")
+               "كل الكورسات", "كل الدورات", "ما هي الدورات", "ما هي الكورسات", "الدورات الموجوده",
+               "جميع الدورات", "جميع الكورسات", "الدورات التي تقدمها", "الدورات اللي بتقدمها",
+               "عندكم دورات", "عندكم كورسات", "هل لديكم دورات", "ما الدورات")
 
 # Added to the retrieval query of catalogue-listing questions, so the
 # search favours course descriptions over generic headings.

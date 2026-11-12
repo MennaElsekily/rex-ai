@@ -152,8 +152,21 @@ def list_curricula(status: Optional[str] = None, limit: int = 50) -> dict:
 @mcp.tool()
 def render_curriculum_pdf(curriculum_id: str, version: Optional[int] = None,
                           language: Optional[str] = None) -> dict:
-    """Render a curriculum version as a PDF (English or Arabic) and record the document."""
+    """Render an APPROVED curriculum version as its final PDF (English or Arabic) and record the document;
+    refused for any version not approved by an administrator."""
     return _tools().render_curriculum_pdf(curriculum_id, version, language)
+
+
+@mcp.tool()
+def link_curriculum_translation(first_id: str, second_id: str) -> dict:
+    """Records that two curricula are the same curriculum in English and Arabic."""
+    return _tools().link_curriculum_translation(first_id, second_id)
+
+
+@mcp.tool()
+def get_curriculum_translation(curriculum_id: str) -> dict:
+    """The sibling curriculum id in the other language, if this curriculum has a bilingual companion."""
+    return _tools().get_curriculum_translation(curriculum_id)
 
 
 if __name__ == "__main__":

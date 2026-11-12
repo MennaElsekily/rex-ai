@@ -201,7 +201,8 @@ _EN_VERBS = (
     r"put\s+together|set\s+up)"
 )
 _EN_NOUN = (
-    r"(?:curriculum|curricula|curriculums|syllabus|course|"
+    # Also the common misspellings admins type: "curriculam", "curiculum", "curriclum", "curricullum".
+    r"(?:curriculum|curricula|curriculums|cur+i+c+u*l+[aeiou]*m?s?|syllabus|course|"
     r"training\s+program(?:me)?|learning\s+path)"
 )
 _EN_ADJ = (
@@ -215,11 +216,16 @@ _EN_A = re.compile(
     rf"\b{_EN_VERBS}\s+(?:me\s+|us\s+)?(?:(?:a|an|the|some)\s+)?"
     rf"(?:{_EN_ADJ}\s+)*{_EN_NOUN}\b"
 )
-# Topic before the noun: "design a Python course ..."
+# Topic before the noun: "design a Python course ...", "create a 30-hour
+# Excel for Business Analysis curriculum" -- a connector ("for", "and", ...)
+# may sit inside a course name but not start it, and a name with a
+# document word ("a course description for the ... curriculum") is a
+# document request, not a new curriculum.
 _EN_B = re.compile(
     rf"\b{_EN_VERBS}\s+(?:me\s+|us\s+)?(?:a|an|the)\s+"
-    r"(?P<topic>(?:(?!(?:for|about|on|in|of|to|with|and)\b)[\w+#.&/-]+\s+)"
-    rf"{{1,6}}?){_EN_NOUN}\b"
+    r"(?P<topic>(?!(?:[\w+#.&/-]+\s+){0,6}?(?:description|proposal|guide|bank|rubrics?|brief|document|plan)\b)"
+    r"(?!(?:for|about|on|in|of|to|with|and)\b)[\w+#.&/-]+\s+(?:[\w+#.&/-]+\s+){0,6}?)"
+    rf"{_EN_NOUN}\b"
 )
 
 _AR_VERBS = (
@@ -234,7 +240,7 @@ _AR_A = re.compile(
 _EN_CONNECT = re.compile(
     r"^[\s,:;-]*(?:(?:about|on|for|in|covering|regarding|concerning|around|"
     r"focused\s+on|focusing\s+on|titled|called|named|that\s+covers?|"
-    r"that\s+teaches|to\s+teach|teaching|dealing\s+with)\b[\s,:;-]*)+"
+    r"that\s+teaches|to\s+teach|teaching|dealing\s+with|that\s+is|which\s+is|that's)\b[\s,:;-]*)+"
 )
 _EN_REJECT = re.compile(
     r"^(?:and|with|that|which|then|plus|also|to|please|thanks?)\b"
@@ -316,7 +322,16 @@ _MARKETING_TAIL_AR = re.compile(
 )
 
 
+# "... backend that is 70 hours and medium level": the level is a slot of its own, not part of the topic.
+_LEVEL_TAIL_EN = re.compile(
+    r"\s*(?:,|\b(?:and|that\s+is|which\s+is|at|for)\b)?\s*(?:(?:a|an|the)\s+)?"
+    r"\b(?:beginners?|intermediate|advanced|medium)\s+level\b.*$", re.IGNORECASE)
+_DANGLING_EN = re.compile(r"(?:\s+(?:that|which)\s+is|\s+and|\s+with)+\s*$", re.IGNORECASE)
+
+
 def _clean_topic(raw: str) -> Optional[str]:
+    raw = _LEVEL_TAIL_EN.sub("", raw)
+    raw = _DANGLING_EN.sub("", raw)
     raw = _MARKETING_TAIL_EN.sub("", raw)
     raw = _MARKETING_TAIL_AR.sub("", raw)
     # "... about Python and make it 50 hours": the instruction is not

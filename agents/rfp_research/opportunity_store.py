@@ -215,6 +215,34 @@ class OpportunityStore:
                     error TEXT,
                     UNIQUE (opportunity_id, attempt_no)
                 );
+                CREATE TABLE IF NOT EXISTS email_sends (
+                    email_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    opportunity_id TEXT NOT NULL,
+                    attempt_no INTEGER NOT NULL,
+                    recipient TEXT NOT NULL,
+                    intended_recipient TEXT,
+                    sender TEXT,
+                    subject TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    provider TEXT,
+                    provider_reference TEXT,
+                    error TEXT,
+                    is_demo_profile TEXT,
+                    UNIQUE (opportunity_id, attempt_no)
+                );
+                CREATE TABLE IF NOT EXISTS email_drafts (
+                    opportunity_id TEXT NOT NULL,
+                    attempt_no INTEGER NOT NULL,
+                    subject TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    updated_by TEXT NOT NULL,
+                    PRIMARY KEY (opportunity_id, attempt_no)
+                );
                 """
             )
             self._connection.commit()
@@ -244,6 +272,15 @@ class OpportunityStore:
                 self._connection.execute(
                     f"ALTER TABLE opportunity_audit ADD COLUMN {column} TEXT"
                 )
+
+        # A database from before intended_recipient existed (or from an
+        # earlier, removed email feature with a differently-shaped table).
+        email_columns = {row[1] for row in self._connection.execute(
+            "PRAGMA table_info(email_sends)").fetchall()}
+        if email_columns:
+            for column in ("intended_recipient", "is_demo_profile"):
+                if column not in email_columns:
+                    self._connection.execute(f"ALTER TABLE email_sends ADD COLUMN {column} TEXT")
 
         # dedupe_key is recomputed for every row, so a change to the rule
         # also applies to tenders stored before it.
@@ -793,6 +830,105 @@ class OpportunityStore:
                 raw = row.pop(f"{field}_json", None)
                 row[field] = json.loads(raw) if raw else ({} if field == "confirmation" else [])
         return rows
+
+    # --------------------------------------------------------- email sends
+
+    def email_send_for_attempt(self, opp_id: str, attempt_no: int) -> Optional[dict[str, Any]]:
+        """The real send already recorded for this attempt, if any (at most one)."""
+        with self._lock:
+            cursor = self._connection.execute(
+                "SELECT * FROM email_sends WHERE opportunity_id = ? AND attempt_no = ?",
+                (opp_id, attempt_no),
+            )
+            row = cursor.fetchone()
+            columns = [d[0] for d in cursor.description]
+        return dict(zip(columns, row)) if row else None
+
+    def email_sends(self, opp_id: str) -> list[dict[str, Any]]:
+        """Every real send recorded for a tender, oldest first."""
+        with self._lock:
+            cursor = self._connection.execute(
+                "SELECT * FROM email_sends WHERE opportunity_id = ? ORDER BY email_id", (opp_id,))
+            columns = [d[0] for d in cursor.description]
+            rows = cursor.fetchall()
+        return [dict(zip(columns, row)) for row in rows]
+
+    def record_email_send(
+        self, opp_id: str, attempt_no: int, recipient: str, subject: str, body: str, mode: str,
+        status: str, created_by: str, intended_recipient: Optional[str] = None,
+        sender: Optional[str] = None, provider: Optional[str] = None,
+        provider_reference: Optional[str] = None, error: Optional[str] = None,
+        is_demo_profile: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Records a real send attempt for one application attempt. At most
+        one record per (opportunity_id, attempt_no): an attempt's
+        prepared email can really be sent at most once, so a second click
+        is refused instead of sending (or recording) it again.
+        """
+        created_by = self._reviewer(created_by)
+        now = _now()
+        with self._lock:
+            try:
+                self._connection.execute(
+                    "INSERT INTO email_sends (opportunity_id, attempt_no, recipient, "
+                    "intended_recipient, sender, subject, body, mode, status, created_at, "
+                    "created_by, provider, provider_reference, error, is_demo_profile) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (opp_id, attempt_no, recipient, intended_recipient, sender, subject, body,
+                     mode, status, now, created_by, provider, provider_reference, error,
+                     "1" if is_demo_profile else None),
+                )
+            except sqlite3.IntegrityError:
+                self._connection.rollback()
+                raise InvalidTransition(
+                    "An email has already been sent for this application attempt.") from None
+            self._connection.commit()
+        return self.email_send_for_attempt(opp_id, attempt_no) or {}
+
+    # ------------------------------------------------------------ drafts
+
+    def get_email_draft(self, opp_id: str, attempt_no: int) -> Optional[dict[str, Any]]:
+        """The admin's saved edit of this attempt's prepared email, if any."""
+        with self._lock:
+            cursor = self._connection.execute(
+                "SELECT * FROM email_drafts WHERE opportunity_id = ? AND attempt_no = ?",
+                (opp_id, attempt_no),
+            )
+            row = cursor.fetchone()
+            columns = [d[0] for d in cursor.description]
+        return dict(zip(columns, row)) if row else None
+
+    def save_email_draft(
+        self, opp_id: str, attempt_no: int, subject: str, body: str, updated_by: str,
+    ) -> dict[str, Any]:
+        """
+        Saves (or replaces) the admin's edit of this attempt's prepared
+        email. Can be reopened and edited again any number of times
+        before it is sent.
+        """
+        updated_by = self._reviewer(updated_by)
+        now = _now()
+        with self._lock:
+            self._connection.execute(
+                "INSERT INTO email_drafts (opportunity_id, attempt_no, subject, body, updated_at, "
+                "updated_by) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(opportunity_id, attempt_no) DO "
+                "UPDATE SET subject = excluded.subject, body = excluded.body, "
+                "updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+                (opp_id, attempt_no, subject, body, now, updated_by),
+            )
+            self._connection.commit()
+        return self.get_email_draft(opp_id, attempt_no) or {}
+
+    def delete_email_draft(self, opp_id: str, attempt_no: int) -> bool:
+        """Discards a saved edit, reverting the review screen to the originally generated text."""
+        with self._lock:
+            deleted = self._connection.execute(
+                "DELETE FROM email_drafts WHERE opportunity_id = ? AND attempt_no = ?",
+                (opp_id, attempt_no),
+            ).rowcount
+            self._connection.commit()
+        return bool(deleted)
 
     # ------------------------------------------------------------- alerts
 

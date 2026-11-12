@@ -145,7 +145,7 @@ def placeholder_parts(template: DocumentTemplate, content: dict[str, Any]) -> An
         return schema.model_construct(executive_summary=x, background_need=x, methodology=x, expected_deliverables=[x])
     if schema is schemas.GuideParts:
         return schema.model_construct(introduction=x, assessment_instructions=x, modules=[
-            schemas.ModuleGuide.model_construct(module_id=m.get("id"), key_concepts=[x], exercise=x)
+            schemas.ModuleGuide.model_construct(module_id=m.get("id"), explanation=x, example=x, key_concepts=[x], exercise=x)
             for m in content.get("modules") or []])
     modules = content.get("modules") or []
     if schema is schemas.InstructorParts:
@@ -190,9 +190,38 @@ def check_parts(parts: Any, template: DocumentTemplate, content: dict[str, Any])
         if sorted(given) != sorted(expected) or len(set(given)) != len(given):
             problems.append(issue("module_ids", f"Write exactly one entry for each module id: {', '.join(expected)} "
                                   f"(got {', '.join(given) or 'none'}).", "modules"))
+        allowed_words = curriculum_words(content) if content.get("language") == "ar" else None
         for module in parts.modules:
-            for text in [*module.key_concepts, module.exercise]:
+            for text in [module.explanation, module.example, *module.key_concepts, module.exercise]:
                 problems += text_problems(text, hours, module.module_id)
+                problems += _repetition_problems(text, module.module_id)
+                problems += incomplete_problems(text, module.module_id)
+                if allowed_words is not None:
+                    problems += foreign_word_problems(text, allowed_words, module.module_id)
+            problems += _teaching_problems(module, units.find_module(content, module.module_id))
+    return problems
+
+
+MIN_EXPLANATION_WORDS = 40   # fewer words than this is a label or a restated topic list, not an explanation
+
+
+def _teaching_problems(guide: Any, module: Optional[dict[str, Any]]) -> list[dict[str, str]]:
+    """A guide module must actually teach: a real explanation that is about, and covers, the module's listed topics."""
+    where, problems = guide.module_id, []
+    words = len(guide.explanation.split())
+    if words < MIN_EXPLANATION_WORDS:
+        problems.append(issue("explanation_too_short", f"The explanation of {where} has {words} words; it must teach the module "
+                              f"in at least {MIN_EXPLANATION_WORDS} words, explaining each listed topic in your own words.", where))
+    if not guide.example.strip():
+        problems.append(issue("empty_text", "Every field must be filled in.", where))
+    topics = [t for t in (module or {}).get("topics") or [] if units.terms(t)]
+    if topics:
+        covered = [t for t in topics if units.shares_a_term(guide.explanation, units.terms(t))]
+        needed = (len(topics) + 1) // 2
+        if len(covered) < needed:
+            missing = next(t for t in topics if t not in covered)
+            problems.append(issue("explanation_off_topic", f"The explanation of {where} covers {len(covered)} of its {len(topics)} "
+                                  f"listed topics; it must explain at least {needed}, for example \"{missing}\".", where))
     return problems
 
 

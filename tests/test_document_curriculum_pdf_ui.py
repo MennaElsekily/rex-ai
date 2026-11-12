@@ -230,7 +230,7 @@ def test_every_choice_has_an_english_and_an_arabic_name():
 
 def test_the_selector_lists_all_ten_document_choices(env):
     seed_approved()
-    at = unlock(start())
+    at = unlock(start(), section="documents")
 
     box = at.selectbox(key="doc_type")
 
@@ -244,7 +244,7 @@ def test_each_new_type_is_requested_through_the_same_form(env, doc_type):
     _, cid = seed_approved()
     env["orchestrator"].handle_request.return_value = {"status": "success", "result": [{
         "agent_name": "document_generation", "status": "success", "result": {"kind": "document", "message": "Generated."}}]}
-    at = unlock(start())
+    at = unlock(start(), section="documents")
     at.selectbox(key="doc_type").select(doc_type).run()
 
     next(b for b in at.button if b.label == "Generate document").click().run()
@@ -258,7 +258,7 @@ def test_each_new_type_is_requested_through_the_same_form(env, doc_type):
 
 def test_choosing_curriculum_pdf_shows_the_download_not_the_generate_form(env):
     seed_approved()
-    at = unlock(start())
+    at = unlock(start(), section="documents")
 
     at.selectbox(key="doc_type").select("curriculum_pdf").run()
 
@@ -278,7 +278,7 @@ def test_the_curriculum_pdf_choice_calls_the_same_toolbox_method_the_download_us
         return real(self, curriculum_id)
 
     monkeypatch.setattr(DocumentToolbox, "approved_curriculum_pdf", spy)
-    at = unlock(start())
+    at = unlock(start(), section="documents")
     at.selectbox(key="doc_type").select("curriculum_pdf").run()
 
     assert calls == [cid] and not at.exception
@@ -291,7 +291,7 @@ def test_a_curriculum_pdf_that_cannot_be_made_is_shown_as_an_error(env, monkeypa
         raise ValueError("The PDF could not be made: disk full")
 
     monkeypatch.setattr(DocumentToolbox, "approved_curriculum_pdf", refuse)
-    at = unlock(start())
+    at = unlock(start(), section="documents")
     at.selectbox(key="doc_type").select("curriculum_pdf").run()
 
     assert not at.exception and any("disk full" in e.value for e in at.error)
@@ -299,10 +299,10 @@ def test_a_curriculum_pdf_that_cannot_be_made_is_shown_as_an_error(env, monkeypa
 
 def test_the_language_note_names_the_curriculums_language(env):
     seed_approved("ar")
-    english = unlock(start())
+    english = unlock(start(), section="documents")
     assert any("Language: Arabic" in c.value for c in english.caption)
 
     arabic = start()
     arabic.session_state["lang"] = "ar"
-    unlock(arabic)
+    unlock(arabic, section="documents")
     assert any("اللغة: العربية" in c.value for c in arabic.caption)

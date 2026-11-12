@@ -21,6 +21,7 @@ from typing import Any, Optional
 
 from agents.conversation_store import ConversationStore
 from agents.curriculum_research import curriculum_store, curriculum_tools, understanding as rules
+from agents.curriculum_research.bilingual import generate_companion
 from agents.curriculum_research.llm import curriculum_model, get_llm
 from agents.curriculum_research.request_parser import detect_refinements
 from agents.curriculum_research.revisions import detect_changes
@@ -45,6 +46,11 @@ def default_curriculum_tools() -> Any:
            or str(curriculum_store.DEFAULT_DB_PATH),
            curriculum_tools.DOCUMENTS_SETTING: get_setting(curriculum_tools.DOCUMENTS_SETTING, "")
            or str(curriculum_tools.DEFAULT_DOCUMENTS_DIR)}
+    # The knowledge-base index the academy catalogue is read from: forwarded
+    # when set, because the MCP SDK starts the server with a minimal environment.
+    for setting in (curriculum_tools.INDEX_SETTING, "REX_VECTOR_DB_DIR"):
+        if get_setting(setting, ""):
+            env[setting] = get_setting(setting, "")
     return CurriculumMcpClient(env=env)
 
 
@@ -107,7 +113,31 @@ class CurriculumAgent:
             self._save(context, state["memory_out"])
         response = state.get("response") or {"kind": "error", "message": "No response."}
         status = state.get("status") or "success"
+        if status == "success" and response.get("kind") == "curriculum" and not state.get("base"):
+            response = {**response, **self._bilingual_companion(state)}
         return self._envelope(request_id, status, response, response["message"] if status == "error" else None)
+
+    def _bilingual_companion(self, state: dict[str, Any]) -> dict[str, Any]:
+        """
+        A freshly generated (never revised) curriculum also gets its
+        full translation into the other language -- see bilingual.py.
+        A failure here is reported alongside the response but never
+        turns the already-saved curriculum into an error.
+        """
+        saved, draft = state.get("saved"), state.get("draft")
+        if not saved or not draft:
+            return {}
+        errors: list[str] = []
+        try:
+            companion = generate_companion(self.tools, self.llm, draft, saved["curriculum_id"],
+                                           on_error=errors.append)
+        except Exception as exc:
+            logger.warning("Bilingual companion generation failed", exc_info=True)
+            return {"bilingual_companion_error": f"{type(exc).__name__}: {exc}"}
+        if companion:
+            return {"bilingual_companion_id": companion["curriculum_id"],
+                    "bilingual_companion_status": companion.get("review_status")}
+        return {"bilingual_companion_error": errors[0] if errors else "The bilingual companion was not created."}
 
     def wants_follow_up(self, request: dict[str, Any]) -> bool:
         """

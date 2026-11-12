@@ -45,9 +45,9 @@ def generate_button(at):
 # ---- the tab and the form ----------------------------------------------------------------------------------------------------------
 
 def test_the_marketing_tab_is_there_and_empty_without_approved_courses(env):
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
 
-    assert "Marketing" in [tab.label for tab in at.tabs]
+    assert "Marketing" in [b.label for b in at.sidebar.button]
     assert any("No course is approved yet" in i.value for i in at.info)
     assert any("No campaigns yet" in i.value for i in at.info)
     assert not [b for b in at.button if b.label == "Create campaign"]
@@ -57,7 +57,7 @@ def test_the_form_offers_the_approved_course_its_audience_and_the_defaults(env, 
     cid = approved(toolbox)
     toolbox.curricula.save_version(valid_curriculum(), {"valid": True, "errors": []}, [])                     # pending: not offered
 
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
 
     assert not at.exception
     courses = [s for s in at.selectbox if s.key == "mk_course"][0]
@@ -73,7 +73,7 @@ def test_generating_asks_the_marketing_agent_with_the_choices_and_the_confirmed_
     env["orchestrator"].handle_request.return_value = {"status": "success", "result": [{
         "agent_name": "marketing", "status": "success", "result": {"kind": "campaign", "message": "Marketing campaign written."}}]}
 
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
     generate_button(at).click().run()
 
     assert not at.exception, at.exception
@@ -88,7 +88,7 @@ def test_the_admin_can_override_the_audience_and_choose_variations_tone_and_cont
     env["orchestrator"].handle_request.return_value = {"status": "success", "result": [{
         "agent_name": "marketing", "status": "success", "result": {"kind": "campaign", "message": "Done."}}]}
 
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
     at.text_input(key=f"mk_audience_{cid}").input("Finance managers moving into analytics")
     at.selectbox(key="mk_tone").select("friendly")
     at.selectbox(key="mk_variations").select(3)
@@ -105,7 +105,7 @@ def test_the_admin_can_override_the_audience_and_choose_variations_tone_and_cont
 
 def test_choosing_no_content_is_refused_before_asking_the_agent(env, toolbox):
     approved(toolbox)
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
     at.multiselect(key="mk_channels").set_value([])
     generate_button(at).click().run()
 
@@ -117,7 +117,7 @@ def test_a_course_without_an_audience_asks_the_admin_for_one(env, toolbox):
     content = valid_curriculum()
     content["target_audience"] = ""
     cid = approved(toolbox, content)
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
 
     assert at.text_input(key=f"mk_audience_{cid}").value == ""
     assert any("does not state its target audience" in c.value for c in at.caption)
@@ -128,7 +128,7 @@ def test_an_agent_question_or_error_is_shown_not_swallowed(env, toolbox):
     env["orchestrator"].handle_request.return_value = {"status": "error", "error_message": "x", "result": [{
         "agent_name": "marketing", "status": "error", "error_message": "WhatsApp promotional messages did not pass the checks, "
         "even after one repair attempt. Nothing was saved: ...", "result": None}]}
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
     generate_button(at).click().run()
 
     assert not at.exception
@@ -139,7 +139,7 @@ def test_an_agent_question_or_error_is_shown_not_swallowed(env, toolbox):
 
 def test_a_new_campaign_shows_its_strategy_variations_and_waits_for_review(env, toolbox):
     cid, campaign_id = campaign(toolbox)
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
 
     assert not at.exception, at.exception
     assert any(campaign_id in m.value and "Pending review" in m.value for m in at.markdown)
@@ -156,7 +156,7 @@ def test_a_new_campaign_shows_its_strategy_variations_and_waits_for_review(env, 
 
 def test_editing_saves_a_new_version_that_needs_review_again(env, toolbox):
     cid, campaign_id = campaign(toolbox)
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
     at.text_area(key=f"mk_{campaign_id}_1_channels_email_variations_0_subject").input("A reviewed subject line")
     at.button(key=f"mk_save_{campaign_id}").click().run()
 
@@ -170,7 +170,7 @@ def test_editing_saves_a_new_version_that_needs_review_again(env, toolbox):
 
 def test_saving_without_changes_saves_nothing(env, toolbox):
     cid, campaign_id = campaign(toolbox)
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
     at.button(key=f"mk_save_{campaign_id}").click().run()
 
     assert not at.exception and any("No changes to save" in i.value for i in at.info)
@@ -179,7 +179,7 @@ def test_saving_without_changes_saves_nothing(env, toolbox):
 
 def test_an_edit_with_an_unsupported_claim_becomes_a_draft_and_cannot_be_approved(env, toolbox):
     cid, campaign_id = campaign(toolbox)
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
     at.text_area(key=f"mk_{campaign_id}_1_channels_whatsapp_variations_0_message").input("Join the best course for only 99 dollars, guaranteed!")
     at.button(key=f"mk_save_{campaign_id}").click().run()
 
@@ -194,7 +194,7 @@ def test_an_edit_with_an_unsupported_claim_becomes_a_draft_and_cannot_be_approve
 
 def test_approving_is_explicit_and_then_the_approved_version_can_be_downloaded(env, toolbox):
     cid, campaign_id = campaign(toolbox)
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
     assert toolbox.store.get_approved(campaign_id) is None                                                   # opening the tab approves nothing
 
     at.text_area(key=f"mk_notes_{campaign_id}").input("Checked with marketing")
@@ -212,7 +212,7 @@ def test_approving_is_explicit_and_then_the_approved_version_can_be_downloaded(e
 def test_a_newer_pending_version_never_replaces_the_approved_download(env, toolbox):
     cid, campaign_id = campaign(toolbox)
     toolbox.approve_campaign(campaign_id, 1, ADMIN)
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
     at.text_area(key=f"mk_{campaign_id}_1_channels_email_variations_0_subject").input("A newer pending subject")
     at.button(key=f"mk_save_{campaign_id}").click().run()
 
@@ -227,7 +227,7 @@ def test_regenerating_asks_the_agent_for_a_new_version_with_the_same_choices(env
     cid, campaign_id = campaign(toolbox, tone="inspiring", variations=3, channels=["email", "ctas"], goal="Fill a group")
     env["orchestrator"].handle_request.return_value = {"status": "success", "result": [{
         "agent_name": "marketing", "status": "success", "result": {"kind": "campaign", "message": "New version."}}]}
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
     at.button(key=f"mk_regen_{campaign_id}").click().run()
 
     assert not at.exception, at.exception
@@ -239,7 +239,7 @@ def test_the_list_can_be_filtered_by_status(env, toolbox):
     cid, first = campaign(toolbox)
     second = make_campaign(toolbox, cid)["result"]["campaign_id"]
     toolbox.approve_campaign(second, 1, ADMIN)
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
     at.selectbox(key="mk_filter").select("approved").run()
 
     assert not at.exception
@@ -252,10 +252,10 @@ def test_the_tab_is_available_in_arabic_with_an_arabic_campaign(env, toolbox):
     campaign_id = make_campaign(toolbox, cid, "ar")["result"]["campaign_id"]
     at = start()
     at.session_state["lang"] = "ar"
-    unlock(at)
+    unlock(at, section="marketing")
 
     assert not at.exception, at.exception
-    assert "التسويق" in [tab.label for tab in at.tabs]
+    assert "التسويق" in [b.label for b in at.sidebar.button]
     assert any("الجمهور المستهدف" in m.value for m in at.markdown) and any(campaign_id in m.value for m in at.markdown)
     assert any("لم يُنشر ولم يُرسل شيء" in c.value or "لا يُنشر" in c.value for c in at.caption)
 
@@ -263,7 +263,7 @@ def test_the_tab_is_available_in_arabic_with_an_arabic_campaign(env, toolbox):
 def test_nothing_in_the_tab_can_send_publish_or_email(env, toolbox):
     cid, campaign_id = campaign(toolbox)
     toolbox.approve_campaign(campaign_id, 1, ADMIN)
-    at = unlock(start())
+    at = unlock(start(), section="marketing")
     buttons = [b for b in at.button if str(b.key or "").startswith("mk_")]          # (the other tabs have their own buttons)
     assert buttons
     labels = " ".join(b.label.lower() for b in buttons)

@@ -74,7 +74,10 @@ class McpToolClient:
         """
         server_module: the server, run as "python -m <server_module>".
         server_name: used in error messages only.
-        env: environment for the server process (None: inherit this one).
+        env: extra environment variables for the server process. The MCP
+            SDK passes only a small safe set of this process's variables
+            (PATH, TEMP, ...) plus these; servers read other settings from
+            .env (agents.config.load_env).
         """
         self._server_params = StdioServerParameters(
             command=sys.executable,

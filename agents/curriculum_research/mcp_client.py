@@ -64,3 +64,9 @@ class CurriculumMcpClient(McpToolClient):
     def render_curriculum_pdf(self, curriculum_id, version=None, language=None):
         return self.call_tool("render_curriculum_pdf", {"curriculum_id": curriculum_id, "version": version,
                                                          "language": language})
+
+    def link_curriculum_translation(self, first_id, second_id):
+        return self.call_tool("link_curriculum_translation", {"first_id": first_id, "second_id": second_id})
+
+    def get_curriculum_translation(self, curriculum_id):
+        return self.call_tool("get_curriculum_translation", {"curriculum_id": curriculum_id})

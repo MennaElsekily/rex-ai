@@ -25,6 +25,51 @@ from agents.rfp_research.tender_tools import LocalTenderTools
 
 
 @pytest.fixture(autouse=True)
+def release_chroma_indexes():
+    """
+    Chroma keeps one open "system" (its SQLite and index files) per index
+    path for the life of the process. Tests build many throw-away indexes
+    in their own temp folders, so without this the suite slowly runs out of
+    file descriptors (Windows' C runtime allows 512) and an unrelated later
+    test fails with "Too many open files".
+    """
+    yield
+    from chromadb.api.client import SharedSystemClient
+
+    SharedSystemClient.clear_system_cache()
+
+
+@pytest.fixture(autouse=True)
+def temporary_knowledge_base_index(tmp_path, monkeypatch):
+    """
+    A store opened without an explicit path (VectorStore(), the RAG MCP
+    server, Agent 3's AcademyCatalogue) gets an empty temporary index,
+    never knowledge_base/vector_db. Tests that need a catalogue build one.
+    """
+    monkeypatch.setenv("REX_VECTOR_DB_DIR", str(tmp_path / "default_vector_db"))
+
+
+@pytest.fixture(autouse=True)
+def no_real_email(monkeypatch):
+    """
+    No test can send a real email: without a Resend API key every send is
+    refused before any network call. (Tests that exercise the provider pass
+    their own key and replace the network call.)
+    """
+    monkeypatch.setenv("RESEND_API_KEY", "")
+
+
+@pytest.fixture(autouse=True)
+def temporary_conversation_and_lead_storage(tmp_path, monkeypatch):
+    """Conversation state and learner leads (real user data) are never written by tests."""
+    from agents import conversation_store
+    from agents.rex_assistant.lead_store import JSONLLeadStore
+
+    monkeypatch.setattr(conversation_store, "DEFAULT_DB_PATH", tmp_path / "default_conversations.sqlite3")
+    monkeypatch.setattr(JSONLLeadStore.__init__, "__defaults__", (str(tmp_path / "default_leads.jsonl"),))
+
+
+@pytest.fixture(autouse=True)
 def temporary_curriculum_storage(tmp_path, monkeypatch):
     """Agent 3's store and PDF folder default to temporary paths in tests."""
     from agents.curriculum_research import curriculum_store, curriculum_tools
@@ -104,6 +149,14 @@ def temporary_tender_database(tmp_path, monkeypatch):
     monkeypatch.setattr(opportunity_store, "DEFAULT_DB_PATH", tmp_path / "default_tenders.sqlite3")
     # The academy's uploaded documents, likewise.
     monkeypatch.setattr(application_profile, "DEFAULT_DOCUMENTS_DIR", tmp_path / "application_documents")
+
+
+@pytest.fixture(autouse=True)
+def temporary_pending_workflow_store(tmp_path, monkeypatch):
+    """A paused-then-resumed Ask Agents request (agents/pending_workflows.py) never touches the real database."""
+    from agents import pending_workflows
+
+    monkeypatch.setattr(pending_workflows, "DEFAULT_DB_PATH", tmp_path / "default_pending_workflows.sqlite3")
 
 
 # Saved before any test patches it, so a test can check the real default

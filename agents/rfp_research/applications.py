@@ -21,6 +21,10 @@ docs/PROJECT_TECHNICAL_GUIDE.md for the evidence):
   profile. It runs in DRY-RUN mode only: nothing is ever sent, and the
   result is "requires_manual_action: review and send it yourself". This
   module contains no email-sending code.
+- Every approved tender (either route) gets that personalised email
+  DRAFT. Sending it is a separate, explicit admin action
+  (email_sending.py), which in test mode only ever goes to the address
+  configured in REX_EMAIL_TEST_RECIPIENT.
 
 Nothing is invented: the email uses only the profile's saved fields and
 uploaded documents and the tender's own fields; anything missing is
@@ -42,7 +46,9 @@ from urllib.parse import urlparse
 
 from agents.config import get_setting
 from agents.rfp_research.api_clients.world_bank import SOURCE_NAME as WORLD_BANK_SOURCE
-from agents.rfp_research.application_profile import DOCUMENT_TYPES, PROFILE_FIELDS, ApplicationProfile
+from agents.rfp_research.application_profile import (
+    DOCUMENT_TYPES, PROFILE_FIELDS, ApplicationProfile, is_demo_profile,
+)
 from agents.rfp_research.opportunity_store import (
     REQUIRES_MANUAL_ACTION,
     SUBMISSION_FAILED,
@@ -153,15 +159,22 @@ def detect_route(tender: dict[str, Any]) -> SubmissionRoute:
 
 
 class ManualRouteAdapter:
-    """Every source without a usable submission mechanism."""
+    """
+    Every source without a usable submission mechanism. It records the
+    official steps and, like every approved tender, gets a personalised
+    application email DRAFT (never sent from here) for the admin to review.
+    """
 
     name = MANUAL
     dry_run = False   # it never sends anything either way
 
     def run(self, tender, route, profile, authorized) -> AttemptResult:
+        email = _prepare_email(tender, route, profile.fields(), profile.documents())
         return AttemptResult(
             REQUIRES_MANUAL_ACTION,
+            confirmation={"dry_run": True, "prepared_email": email},
             manual_actions=[*route.steps,
+                            "A personalised application email draft was prepared below: nothing was sent.",
                             "Then record the manual submission here, with the date and reference."],
             submission_url=route.official_url,
         )
@@ -187,14 +200,17 @@ class EmailExpressionOfInterestAdapter:
         if not authorized:
             missing.append("Your authorisation to submit on the academy's behalf "
                            "(the checkbox when approving)")
+        # The draft is prepared either way (missing details are left out, never invented), so the
+        # admin always has something to review; what is missing is listed to complete first.
+        email = _prepare_email(tender, route, fields, documents)
         if missing:
             return AttemptResult(
                 REQUIRES_MANUAL_ACTION, missing=missing,
+                confirmation={"dry_run": True, "prepared_email": email},
                 manual_actions=["Complete the application profile (and authorise submission), "
                                 "then prepare again.", *route.steps],
                 submission_url=route.official_url)
 
-        email = _prepare_email(tender, route, fields, documents)
         recommended = [DOCUMENT_TYPES[d] for d in EOI_RECOMMENDED_DOCUMENTS if d not in present]
         return AttemptResult(
             REQUIRES_MANUAL_ACTION,
@@ -207,34 +223,121 @@ class EmailExpressionOfInterestAdapter:
             submission_url=f"mailto:{route.recipient}")
 
 
+def _tender_notice_lines(tender) -> list[str]:
+    """What the notice itself says, for the lines actually present (nothing guessed)."""
+    lines = []
+    for key, label in (("category", "Category"), ("organization", "Issuing organisation"),
+                       ("country", "Country"), ("scope_of_work", "Scope of work"),
+                       ("deadline", "Submission deadline")):
+        if tender.get(key):
+            lines.append(f"{label}: {tender[key]}")
+    eligibility = tender.get("eligibility")
+    if eligibility:
+        lines.append("Eligibility: " + "; ".join(str(e) for e in eligibility))
+    return lines
+
+
+_STOPWORDS = frozenset("""
+about across also amongst based being between their there these those through under using where which while
+with within would could should other services service training programme program project projects provide
+providing provider tender notice request interest expression consultancy consulting academy organisation
+organization company limited ministry government
+""".split())
+
+
+def _topic_stems(text: str) -> set[str]:
+    words = re.findall(r"[a-zA-Z؀-ۿ]{4,}", str(text or "").casefold())
+    return {w[:6] for w in words if w not in _STOPWORDS}
+
+
+def _sentences(text: Optional[str]) -> list[str]:
+    return [s.strip() for s in re.split(r"(?<=[.!?;])\s+|\n+", str(text or "")) if s.strip()]
+
+
+def _relevant_sentences(tender: dict[str, Any], fields: dict[str, Any], limit: int = 3) -> list[str]:
+    """
+    The profile's OWN sentences (services, experience, qualifications,
+    overview) that share topic words with this tender's title, scope,
+    category and eligibility -- quoted, never rewritten -- so each email
+    is about this notice, not one generic text.
+    """
+    tender_text = " ".join(str(tender.get(k) or "") for k in ("title", "scope_of_work", "category",
+                                                              "training_category"))
+    tender_stems = _topic_stems(tender_text + " " + " ".join(str(e) for e in tender.get("eligibility") or []))
+    scored = []
+    profile_sentences = [s for key in ("services", "experience", "qualifications", "overview")
+                         for s in _sentences(fields.get(key))]
+    for order, sentence in enumerate(profile_sentences):
+        score = len(_topic_stems(sentence) & tender_stems)
+        if score:
+            scored.append((score, order, sentence))
+    best = sorted(scored, key=lambda item: (-item[0], item[1]))[:limit]
+    return [sentence for _, _, sentence in sorted(best, key=lambda item: item[1])]
+
+
 def _prepare_email(tender, route, fields, documents) -> dict[str, Any]:
-    """The email, built only from saved profile fields, documents and tender fields."""
+    """
+    The email, built only from saved profile fields, documents and tender
+    fields: a field or notice line that is not actually present is left
+    out (or a neutral phrase is used), never guessed or filled with a
+    placeholder. It is tailored to the notice: its details are quoted and
+    the profile's own sentences most relevant to it are put first.
+    """
     reference = tender.get("reference_number")
     title = tender.get("title") or "the notice"
     subject = f"Expression of Interest: {reference + ' - ' if reference else ''}{title}"[:200]
+    name = fields.get("legal_name")
 
-    identity = [fields["legal_name"]]
+    identity = [name] if name else []
     for key, label in (("registration_number", "Commercial registration"), ("address", "Address"),
                        ("website", "Website")):
         if fields.get(key):
             identity.append(f"{label}: {fields[key]}")
-    contact = ", ".join(filter(None, [fields["contact_person"], fields.get("contact_title")]))
-    signature = "\n".join(filter(None, [contact, fields["legal_name"], fields["contact_email"],
-                                        fields.get("contact_phone")]))
+    contact = ", ".join(filter(None, [fields.get("contact_person"), fields.get("contact_title")]))
+    signature = "\n".join(filter(None, [contact, name, fields.get("contact_email"), fields.get("contact_phone")]))
     attachments = [{"document_id": d["document_id"], "type": DOCUMENT_TYPES[d["doc_type"]],
                     "file_name": d["original_name"], "size_bytes": d["size_bytes"]} for d in documents]
 
-    body = "\n\n".join([
+    opening = f"{name} wishes to express its interest" if name else "We wish to express our interest"
+    paragraphs = [
         "Dear Sir or Madam,",
-        f"{fields['legal_name']} wishes to express its interest in \"{title}\""
+        f"{opening} in \"{title}\""
         f"{' (reference ' + reference + ')' if reference else ''}"
         f"{', issued by ' + tender['organization'] if tender.get('organization') else ''}.",
-        "Our details:\n" + "\n".join(identity),
-        "Please find attached: " + "; ".join(f"{a['type']} ({a['file_name']})" for a in attachments) + ".",
-        "Kind regards,\n" + signature,
-    ])
-    return {"to": route.recipient, "from": fields["contact_email"], "subject": subject,
-            "body": body, "attachments": attachments}
+    ]
+    notice_lines = _tender_notice_lines(tender)
+    if notice_lines:
+        paragraphs.append("We note the following details of the notice:\n" + "\n".join(notice_lines))
+    relevant = _relevant_sentences(tender, fields)
+    if relevant:
+        paragraphs.append("How our work relates to this notice:\n" + "\n".join(f"- {s}" for s in relevant))
+
+    def rest(key: str) -> str:
+        """A profile field without the sentences already quoted above (no repetition)."""
+        return " ".join(s for s in _sentences(fields.get(key)) if s not in relevant)
+
+    if rest("overview") or rest("services"):
+        paragraphs.append("\n".join(filter(None, [rest("overview"), rest("services")])))
+    if rest("experience"):
+        paragraphs.append("Relevant experience: " + rest("experience"))
+    if rest("qualifications"):
+        paragraphs.append("Qualifications and certifications: " + rest("qualifications"))
+    if identity:
+        paragraphs.append("Our details:\n" + "\n".join(identity))
+    if attachments:
+        paragraphs.append("Please find attached: " + "; ".join(
+            f"{a['type']} ({a['file_name']})" for a in attachments) + ".")
+    paragraphs.append("Please let us know if any additional information or documentation "
+                      "would be helpful at this stage.")
+    paragraphs.append("Kind regards," + ("\n" + signature if signature else ""))
+
+    is_demo = is_demo_profile(fields)
+    if is_demo:
+        paragraphs.insert(0, "[DEMONSTRATION CONTENT -- the organisation profile used to write "
+                             "this draft contains demo data, not a real organisation's details.]")
+
+    return {"to": route.recipient, "from": fields.get("contact_email") or "", "subject": subject,
+            "body": "\n\n".join(paragraphs), "attachments": attachments, "is_demo_profile": is_demo}
 
 
 class ApplicationWorkflow:

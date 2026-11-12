@@ -39,6 +39,24 @@ def approved_curriculum(toolbox: DocumentToolbox, content: dict | None = None) -
     return saved["curriculum_id"]
 
 
+_GUIDE_TOPIC = {"en": {"M1": "cleaning data", "M2": "classification"}, "ar": {"M1": "تنظيف البيانات", "M2": "التصنيف"}}
+
+
+def guide_teaching(language: str, module_id: str) -> dict:
+    """A participant-guide explanation and example that teach the module's topic (long enough to pass the checks)."""
+    topic = _GUIDE_TOPIC[language].get(module_id) or _GUIDE_TOPIC[language]["M1"]
+    if language == "ar":
+        return {"explanation": f"يتناول هذا الجزء موضوع {topic} ويشرح معناه خطوة بعد خطوة. يبدأ المتعلم بفهم الفكرة الأساسية "
+                               f"في {topic} ثم يتعرف على سبب أهميتها في العمل مع البيانات. بعد ذلك يرى كيف تُطبق هذه الفكرة "
+                               "على أمثلة بسيطة، ويتدرب على ملاحظة النتائج وتفسيرها بلغة واضحة قبل الانتقال إلى الجزء التالي.",
+                "example": f"مثال عملي: يطبق المتعلم {topic} على مجموعة صغيرة من البيانات ويقارن النتيجة قبل التطبيق وبعده."}
+    return {"explanation": f"This part explains {topic} step by step. Learners first meet the core idea behind {topic} and why it "
+                           "matters when working with data. They then see how the idea is applied to a small, realistic example, "
+                           "practise noticing the results, and learn to describe what happened in plain words before they move on "
+                           "to the next part of the course.",
+            "example": f"Worked example: a learner applies {topic} to a small dataset and compares the result before and after."}
+
+
 def parts_answers(language: str = "en", module_ids=("M1", "M2")) -> dict[str, Any]:
     ar = language == "ar"
     return {
@@ -50,7 +68,8 @@ def parts_answers(language: str = "en", module_ids=("M1", "M2")) -> dict[str, An
                           "expected_deliverables": ["دفتر ملاحظات"] if ar else ["A trained and evaluated model"]},
         "GuideParts": {"introduction": "مرحبًا" if ar else "Welcome to the course.",
                        "assessment_instructions": "تعليمات" if ar else "Complete the practical test on your own.",
-                       "modules": [{"module_id": m, "key_concepts": ["مفهوم 1", "مفهوم 2"] if ar else ["Concept one", "Concept two"],
+                       "modules": [{"module_id": m, **guide_teaching(language, m),
+                                    "key_concepts": ["مفهوم 1", "مفهوم 2"] if ar else ["Concept one", "Concept two"],
                                     "exercise": "تمرين" if ar else "Work through the lab."} for m in module_ids]},
         "CapstoneParts": {"introduction": "مقدمة المشروع" if ar else "Build an end-to-end model.",
                           "evaluation_guidance": "إرشادات" if ar else "Prepare the notebook and presentation."},

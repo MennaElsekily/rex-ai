@@ -207,12 +207,12 @@ def test_the_admin_warning_uses_the_label_in_both_languages(env):
     toolbox = DocumentToolbox(store=DocumentStore(), curricula=CurriculumStore())
     make_document(toolbox)
 
-    english = unlock(start())
+    english = unlock(start(), section="documents")
     assert any("Training format" in w.value and "training_format" not in w.value for w in english.warning)
 
     arabic = start()
     arabic.session_state["lang"] = "ar"
-    unlock(arabic)
+    unlock(arabic, section="documents")
     assert any("نمط التدريب" in w.value and "training_format" not in w.value for w in arabic.warning)
 
 

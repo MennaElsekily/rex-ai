@@ -23,6 +23,9 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 MODE_QUESTION = "question"
 MODE_RECOMMENDATION = "recommendation"
+# "What courses do you offer?": the complete verified catalogue, listed
+# by the RAG tool get_course_records (not a top-k passage search).
+MODE_CATALOGUE = "catalogue"
 
 MAX_CONTEXT_CHARS = 12000
 
@@ -30,6 +33,7 @@ MAX_CONTEXT_CHARS = 12000
 EVIDENCE_OK = "ok"
 EVIDENCE_NO_RESULTS = "no_results"
 EVIDENCE_EMPTY_INDEX = "empty_index"
+EVIDENCE_TRANSLATION_FAILED = "translation_failed"
 
 MESSAGES = {
     "no_results": {
@@ -51,6 +55,13 @@ MESSAGES = {
     "generation_failed": {
         "en": "Sorry, I couldn't write an answer right now. Please try again.",
         "ar": "عذرًا، تعذّر عليّ كتابة الإجابة الآن. حاول مرة أخرى.",
+    },
+    # The catalogue is in English; an Arabic question whose translation
+    # failed is not searched (unrelated passages would come back).
+    "translation_failed": {
+        "en": "Sorry, I couldn't process your question for the catalogue search right now. "
+              "Please try again, or ask in English.",
+        "ar": "عذرًا، لم أتمكن من تجهيز سؤالك للبحث في الكتالوج الآن. حاول مرة أخرى أو اكتب سؤالك بالإنجليزية.",
     },
 }
 
@@ -202,14 +213,17 @@ def fallback_key(evidence: dict[str, Any]) -> Optional[str]:
         return "empty_index"
     if status == EVIDENCE_NO_RESULTS:
         return "no_results"
+    if status == EVIDENCE_TRANSLATION_FAILED:
+        return "translation_failed"
     if status != EVIDENCE_OK:
         return "unavailable"
     return None
 
 
 # Scripts that must never appear in an Arabic or English answer (the
-# local model sometimes drifts into Chinese mid-sentence).
-FOREIGN_SCRIPT = re.compile(r"[぀-ヿ㐀-䶿一-鿿가-힯]+")
+# local model sometimes drifts into Chinese mid-sentence, and once wrote
+# a Russian word in an Arabic answer: "مدة занятияها 24 ساعة").
+FOREIGN_SCRIPT = re.compile(r"[Ѐ-ӿ぀-ヿ㐀-䶿一-鿿가-힯]+")
 
 LANGUAGE_REMINDER = {
     "en": "Write the whole answer in English only. Do not use Chinese or any other language.",
@@ -241,9 +255,13 @@ def evidence_context(
 
     for chunk in chunks:
         text = (chunk.get("text") or "").strip()
+        # The course a passage belongs to (rule 13), so a lone "Entry
+        # requirements" passage is read as part of its course, not as one.
+        course = " ".join(p for p in (chunk.get("course_id"), chunk.get("course_name")) if p)
         label = (
             f"[{chunk['reference']}] Source: {chunk.get('source')}\n"
-            f"Section: {chunk.get('section_path') or chunk.get('section')}\n"
+            + (f"Course: {course}\n" if course else "")
+            + f"Section: {chunk.get('section_path') or chunk.get('section')}\n"
             "Content:\n"
         )
 
@@ -263,6 +281,10 @@ def evidence_context(
             "section_path": chunk.get("section_path"),
             "record_id": chunk.get("record_id"),
             "chunk_id": chunk.get("chunk_id"),
+            # Traceability: how the passage ranked, and what it says.
+            "relevance_score": chunk.get("relevance_score"),
+            "distance": chunk.get("distance"),
+            "excerpt": text[:300],
         })
 
     return "\n\n---\n\n".join(parts), sources

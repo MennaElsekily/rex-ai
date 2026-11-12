@@ -9,7 +9,7 @@ from typing_extensions import TypedDict
 from agents.multilingual import detect_conversation_language
 from agents.multilingual import detect_language as _detect_language
 from agents.course_intent import GENERAL, classify_course_intent
-from agents.routing import deliverables
+from agents.routing import deliverables, split_clauses
 from agents.text_utils import normalize_for_matching
 
 
@@ -76,6 +76,7 @@ class OrchestratorState(TypedDict, total=False):
     request: dict[str, Any]
     plan: list[str]
     excluded: list[str]
+    agent_inputs: dict[str, str]
     results: list[dict[str, Any]]
     current_index: int
     response: dict[str, Any]
@@ -93,6 +94,126 @@ _EXCLUDED_MESSAGE = {
         ),
     },
 }
+
+
+_STEP_NAMES = {
+    "rfp_research": ("Tender research", "البحث عن المناقصات"),
+    "curriculum_research": ("Curriculum research", "إعداد المناهج"),
+    "document_generation": ("Document generation", "إنشاء المستندات"),
+    "marketing": ("Marketing", "التسويق"),
+    "rex_assistant": ("REX Assistant", "مساعد ريكس"),
+    "orchestrator": ("Orchestrator", "المنسّق"),
+}
+
+
+# Agents that build on the curriculum an earlier step of the same request produced.
+_USES_PRIOR_CURRICULUM = ("document_generation", "marketing")
+_STATUS_WORDS = {"pending_review": ("pending review", "بانتظار المراجعة"), "draft": ("draft", "مسودة"),
+                 "approved": ("approved", "معتمد")}
+
+
+def _artifacts(body: dict[str, Any], ar: bool) -> str:
+    """What a step produced, from its own result: ids and review status (nothing invented)."""
+    parts = []
+    if body.get("curriculum_id"):
+        status = _STATUS_WORDS.get(str(body.get("review_status") or ""), (body.get("review_status"),) * 2)
+        parts.append(f"{body['curriculum_id']}" + (f", {status[1 if ar else 0]}" if status[0] else ""))
+    if body.get("bilingual_companion_id"):
+        parts.append(("النسخة الأخرى " if ar else "companion ") + str(body["bilingual_companion_id"]))
+    for key in ("document_id", "campaign_id"):
+        if body.get(key):
+            parts.append(str(body[key]))
+    return f" [{'; '.join(parts)}]" if parts else ""
+
+
+def _warnings(body: dict[str, Any]) -> list[str]:
+    warnings = body.get("warnings")
+    if isinstance(warnings, list):
+        return [str(w.get("message") if isinstance(w, dict) else w) for w in warnings if w][:3]
+    return []
+
+
+def synthesize_results(results: list[dict[str, Any]], language: str) -> str:
+    """
+    One coherent account of a request, in the order the agents ran: what
+    each step did (its own first line) and produced (ids, review status),
+    its warnings, which step is waiting for an approval, which failed and
+    why, which steps built on an earlier step's curriculum (or that they
+    ran independently), and a final tally. Built only from the agents' own
+    results; nothing is invented.
+    """
+    ar = language == "ar"
+    lines = []
+    done = waiting = failed = 0
+    curriculum_step = None
+    dependent = []
+    for number, result in enumerate(results, start=1):
+        agent = result.get("agent_name")
+        name = _STEP_NAMES.get(agent, (agent,) * 2)[1 if ar else 0]
+        body = result.get("result") if isinstance(result.get("result"), dict) else {}
+        first = str(body.get("message") or "").strip().splitlines()
+        if result.get("status") == "success":
+            done += 1
+            outcome = (first[0] if first else ("تم." if ar else "Done.")) + _artifacts(body, ar)
+        elif result.get("status") == "paused":
+            waiting += 1
+            outcome = ("بانتظار اعتماد المسؤول؛ تُستأنف الخطوات التالية بعده."
+                       if ar else "Waiting for an administrator's approval; the next steps resume after it.")
+        elif result.get("status") == "waiting_for_input":
+            waiting += 1
+            outcome = first[0] if first else ("بانتظار إجابتك." if ar else "Waiting for your answer.")
+        else:
+            failed += 1
+            outcome = (("فشلت: " if ar else "Failed: ") + str(result.get("error_message") or ""))
+        lines.append(f"{number}. {name}: {outcome}")
+        lines.extend(("   ⚠ " + w) for w in _warnings(body))
+        if agent == "curriculum_research" and curriculum_step is None and result.get("status") == "success":
+            curriculum_step = number
+        elif agent in _USES_PRIOR_CURRICULUM and curriculum_step is not None:
+            dependent.append(number)
+    if len(results) > 1:
+        if dependent:
+            steps = ", ".join(str(n) for n in dependent)
+            lines.append(f"استخدمت الخطوة/الخطوات {steps} المنهج الناتج عن الخطوة {curriculum_step}."
+                         if ar else f"Step{'s' if len(dependent) > 1 else ''} {steps} used the curriculum "
+                                    f"from step {curriculum_step}.")
+        else:
+            lines.append("نُفذت هذه الخطوات مستقلةً عن بعضها." if ar else "These steps ran independently.")
+        tally = [f"{'تم' if ar else 'Done'}: {done}/{len(results)}"]
+        if waiting:
+            tally.append(f"{'بانتظار الاعتماد' if ar else 'Waiting'}: {waiting}")
+        if failed:
+            tally.append(f"{'فشلت' if ar else 'Failed'}: {failed}")
+        lines.append(" · ".join(tally))
+    return "\n".join(lines)
+
+
+_TENDER_TERMS = (
+    "tender", "tenders", "rfp", "rfq", "request for proposal", "request for quotation", "مناقصة", "مناقصات",
+    "مناقصه", "مناقصات تعليمية", "عطاء", "عطاءات", "طلب تقديم عروض", "طلب عروض أسعار", "طلب عروض اسعار",
+)
+
+
+def _mentions_tenders(folded_text: str) -> bool:
+    return any(term in folded_text for term in _TENDER_TERMS)
+
+
+def _agent_inputs(plan: list[str], text: str) -> dict[str, str]:
+    """
+    For a request that mixes independent jobs (a tender search and a new
+    curriculum), each agent's own part: the tender clauses for RFP
+    Research, the rest for Curriculum Research -- so the curriculum topic
+    is not "tenders in Egypt". Chained requests (curriculum -> document ->
+    marketing) keep the whole text: the later agents need it.
+    """
+    if plan != ["rfp_research", "curriculum_research"]:
+        return {}
+    clauses = split_clauses(text)
+    tender = [c for c in clauses if _mentions_tenders(c.casefold())]
+    other = [c for c in clauses if not _mentions_tenders(c.casefold())]
+    if not tender or not other:
+        return {}
+    return {"rfp_research": ". ".join(tender), "curriculum_research": ". ".join(other)}
 
 
 class Orchestrator:
@@ -260,6 +381,12 @@ class Orchestrator:
         if not plan:
             plan = self._plan_from_open_conversation(request)
 
+        # A resumed workflow (admin_service.py's pending_workflows.py):
+        # the agent(s) already run before a pause are never run again.
+        skip = (request.get("context") or {}).get("skip_agents") or []
+        if skip:
+            plan = [name for name in plan if name not in skip]
+
         # Excluded agents are never run; the request is answered with an
         # explanation instead of being sent to some other agent.
         excluded = [name for name in plan if name in self.excluded_agents]
@@ -269,6 +396,7 @@ class Orchestrator:
         return {
             "plan": plan,
             "excluded": excluded,
+            "agent_inputs": _agent_inputs(plan, request["user_input"]),
             "results": [],
             "current_index": 0,
         }
@@ -363,24 +491,13 @@ class Orchestrator:
         if len(asked) >= 2:
             return asked
 
-        # Agent 2: RFP and tender research.
-        if any(term in text for term in (
-            "tender",
-            "tenders",
-            "rfp",
-            "rfq",
-            "request for proposal",
-            "request for quotation",
-            "مناقصة",
-            "مناقصات",
-            "مناقصه",
-            "مناقصات تعليمية",
-            "عطاء",
-            "عطاءات",
-            "طلب تقديم عروض",
-            "طلب عروض أسعار",
-            "طلب عروض اسعار",
-        )):
+        # Agent 2: RFP and tender research -- with Agent 3 too when another
+        # part of the request asks for a curriculum ("Find training tenders
+        # in Egypt and create a data analytics curriculum").
+        if _mentions_tenders(text):
+            other_parts = [c for c in split_clauses(original_text) if not _mentions_tenders(c.casefold())]
+            if any("curriculum_research" in deliverables(c, self._is_course_creation) for c in other_parts):
+                return ["rfp_research", "curriculum_research"]
             return ["rfp_research"]
 
         # One explicit deliverable: a supported document (Agent 4) or marketing content (Agent 5). Before the curriculum
@@ -530,7 +647,9 @@ class Orchestrator:
             agent_request = {
                 "request_id": request["request_id"],
                 "agent_name": agent_name,
-                "user_input": request["user_input"],
+                # Its own part of a mixed request (see _agent_inputs); the
+                # whole request otherwise. The full text stays in context.
+                "user_input": (state.get("agent_inputs") or {}).get(agent_name, request["user_input"]),
                 "context": {
                     **request.get("context", {}),
                     "language": request.get("language", "en"),
@@ -593,6 +712,7 @@ class Orchestrator:
             "agent_name": "orchestrator",
             "status": "error" if failures else "success",
             "result": results,
+            "summary": synthesize_results(results, request.get("language", "en")),
             "error_message": (
                 "; ".join(
                     result.get("error_message") or "Agent failed"

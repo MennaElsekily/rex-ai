@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,14 @@ import chromadb
 DEFAULT_STORE_PATH = str(
     Path(__file__).resolve().parent / "vector_db"
 )
+# The index a deployment uses (its authoritative catalogue): this setting
+# when given, else knowledge_base/vector_db. Read when a store is opened.
+STORE_SETTING = "REX_VECTOR_DB_DIR"
+COLLECTION_NAME = "rex_knowledge"
+
+
+def configured_store_path() -> str:
+    return os.environ.get(STORE_SETTING, "").strip() or DEFAULT_STORE_PATH
 
 
 def _flat_value(value: Any) -> str | int | float | bool | None:
@@ -26,11 +35,11 @@ class VectorStore:
 
     def __init__(
         self,
-        persist_directory: str | Path = DEFAULT_STORE_PATH,
-        collection_name: str = "rex_knowledge",
+        persist_directory: str | Path | None = None,
+        collection_name: str = COLLECTION_NAME,
     ) -> None:
         self.persist_directory = str(
-            Path(persist_directory).resolve()
+            Path(persist_directory or configured_store_path()).resolve()
         )
 
         Path(self.persist_directory).mkdir(

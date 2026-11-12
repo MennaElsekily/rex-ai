@@ -23,11 +23,16 @@ class FakeMessage:
 
 
 class FakeLLM:
-    """Profile extraction gets `profile_json`; answer writing gets `answer`."""
+    """
+    Profile extraction gets `profile_json`; answer writing gets `answer`;
+    a recommendation (choosing from the catalogue records) gets `choice`.
+    """
 
-    def __init__(self, profile_json="{}", answer="Grounded answer [1]."):
+    def __init__(self, profile_json="{}", answer="Grounded answer [1].",
+                 choice="FL-101 :: It builds the mobile skills your goal needs."):
         self.profile_json = profile_json
         self.answer = answer
+        self.choice = choice
         self.extraction_calls = []
         self.answer_calls = []
 
@@ -39,6 +44,8 @@ class FakeLLM:
         self.answer_calls.append(messages)
         if isinstance(self.answer, Exception):
             raise self.answer
+        if "CATALOGUE COURSES" in last:
+            return FakeMessage(self.choice)
         return FakeMessage(self.answer)
 
 
@@ -76,6 +83,21 @@ CHUNK = {
     "relevance_score": 1.2,
 }
 
+# The verified catalogue record the knowledge base returns (get_course_records).
+RECORD = {
+    "course_id": "FL-101", "course_name": "Flutter Foundations", "department": "Mobile Development",
+    "level": "Beginner", "total_hours": 60, "duration": "60 hours", "delivery_mode": None, "fee": None,
+    "fee_currency": None, "fee_text": None, "entry_requirements": "Basic computer literacy.",
+    "prerequisite_courses": [], "prerequisites_text": None, "target_audience": "Beginners in mobile development.",
+    "summary": None, "data_status": None, "source_files": ["04_Flutter.pdf"], "pages": [3],
+}
+
+# A retrieved passage belonging to RECORD: a course is recommended only
+# when the similarity search retrieved passages of it.
+RECORD_CHUNK = {**CHUNK, "reference": 1, "course_id": "FL-101", "course_name": "Flutter Foundations"}
+CATALOGUE = {"status": "ok", "records": [], "total_in_catalogue": 1, "complete": True, "filter": {},
+             "match_method": "all", "error": None}
+
 FULL_PROFILE = {
     "background": "accountant",
     "career_goal": "data analyst",
@@ -97,6 +119,7 @@ def llm():
 def mcp():
     client = MagicMock()
     client.search_knowledge_base.return_value = _evidence(chunks=[CHUNK])
+    client.get_course_records.return_value = {"status": "ok", "records": [dict(RECORD)], "error": None}
     return client
 
 
@@ -145,10 +168,8 @@ def test_unrelated_question_is_checked_against_the_evidence_not_answered(agent, 
 
 
 @pytest.mark.parametrize("message", [
-    "What courses are available?",
     "What does the Python course cover?",
     "What are the prerequisites?",
-    "ما هي الدورات المتاحة؟",
     "ما هي سياسة الاسترداد؟",
 ])
 def test_course_questions_are_answered_without_discovery(message, agent, mcp, llm):
@@ -324,6 +345,7 @@ def test_no_recommendation_until_profile_is_complete(agent, mcp):
 
 
 def test_complete_profile_triggers_personalized_retrieval(agent, mcp, llm):
+    mcp.search_knowledge_base.return_value = _evidence(chunks=[RECORD_CHUNK])
     response = agent.handle_message(
         "Recommend a course for me", state={"profile": dict(FULL_PROFILE)}
     )
@@ -338,6 +360,7 @@ def test_complete_profile_triggers_personalized_retrieval(agent, mcp, llm):
 
 
 def test_recommend_now_proceeds_with_incomplete_profile_and_says_so(agent, mcp, llm):
+    mcp.search_knowledge_base.return_value = _evidence(chunks=[RECORD_CHUNK])
     response = _converse(agent, "Recommend a course for me", "accountant",
                          "recommend now")
 
@@ -348,6 +371,7 @@ def test_recommend_now_proceeds_with_incomplete_profile_and_says_so(agent, mcp, 
 
 
 def test_completed_profile_is_reused_for_later_recommendations(agent, mcp):
+    mcp.search_knowledge_base.return_value = _evidence(chunks=[RECORD_CHUNK])
     response = agent.handle_message(
         "Recommend a course for me", state={"profile": dict(FULL_PROFILE)}
     )
@@ -470,7 +494,7 @@ def test_missing_evidence_and_tool_errors_give_clear_messages(
 ):
     mcp.search_knowledge_base.return_value = evidence
 
-    result = _converse(agent, "What courses are available?")["result"]
+    result = _converse(agent, "What does the Python course cover?")["result"]
 
     assert result["answer_status"] == expected_status
     assert phrase in result["answer"]
@@ -481,7 +505,7 @@ def test_missing_evidence_and_tool_errors_give_clear_messages(
 def test_mcp_connection_failure_gives_clear_message(agent, mcp):
     mcp.search_knowledge_base.side_effect = RuntimeError("MCP server unavailable")
 
-    result = _converse(agent, "What courses are available?")["result"]
+    result = _converse(agent, "What does the Python course cover?")["result"]
 
     assert result["answer_status"] == "unavailable"
     assert "temporarily unavailable" in result["answer"]
@@ -490,7 +514,7 @@ def test_mcp_connection_failure_gives_clear_message(agent, mcp):
 def test_model_failure_gives_clear_message(agent, llm):
     llm.answer = RuntimeError("ollama down")
 
-    result = _converse(agent, "What courses are available?")["result"]
+    result = _converse(agent, "What does the Python course cover?")["result"]
 
     assert result["answer_status"] == "generation_failed"
     assert result["sources"] == []
@@ -499,7 +523,7 @@ def test_model_failure_gives_clear_message(agent, llm):
 def test_errors_are_bilingual(agent, mcp):
     mcp.search_knowledge_base.return_value = _evidence("error", error="boom")
 
-    result = _converse(agent, "ما هي الدورات المتاحة؟")["result"]
+    result = _converse(agent, "ما هي سياسة الاسترداد؟")["result"]
 
     assert "تعذّر الوصول إلى قاعدة المعرفة" in result["answer"]
 
@@ -666,7 +690,7 @@ def test_arabizi_message_gets_arabic_reply(agent):
 
 
 def test_answer_is_written_in_the_conversation_language(agent, llm):
-    _converse(agent, "ما هي الدورات المتاحة؟")
+    _converse(agent, "ما هي سياسة الاسترداد؟")
 
     system_prompt = llm.answer_calls[-1][0].content
     assert "Modern Standard Arabic" in system_prompt
@@ -712,13 +736,34 @@ def test_graph_can_be_built_with_injected_client(leads, mcp):
     assert graph is not None
 
 
-def test_catalogue_listing_questions_get_the_search_hint(agent, mcp):
-    # Moved from the generic engine (knowledge_base/evidence.py) to REX.
-    agent.handle_message("Which courses do you offer?")
+@pytest.mark.parametrize("message", ["Which courses do you offer?", "What courses are available?",
+                                     "ما هي الدورات المتاحة؟"])
+def test_catalogue_listing_questions_list_the_whole_catalogue(message, agent, mcp, llm):
+    # A top-5 passage search cannot list a whole catalogue (it used to be
+    # one, with a search hint): the RAG catalogue tool lists every course.
+    mcp.get_course_records.return_value = {**CATALOGUE, "records": [dict(RECORD)]}
 
-    query = mcp.search_knowledge_base.call_args.kwargs["retrieval_query"]
-    from agents.course_intent import CATALOGUE_LISTING_HINT
-    assert query == f"Which courses do you offer?. {CATALOGUE_LISTING_HINT}"
+    result = _converse(agent, message)["result"]
+
+    mcp.get_course_records.assert_called_once_with(query=message)
+    mcp.search_knowledge_base.assert_not_called()
+    assert llm.answer_calls == []                 # written from the records, no model call
+    assert result["mode"] is None and result["answer_status"] == "answered"
+    assert "1. **Flutter Foundations** (FL-101)" in result["answer"]
+    assert result["selected_course"] == {"course_id": "FL-101", "course_name": "Flutter Foundations"}
+
+
+@pytest.mark.parametrize("listing, phrase", [
+    ({"status": "error", "records": [], "error": "boom"}, "temporarily unavailable"),
+    ({**CATALOGUE, "status": "empty_index", "total_in_catalogue": 0}, "no documents are indexed"),
+    ({**CATALOGUE, "status": "translation_failed", "total_in_catalogue": 0}, "couldn't process your question"),
+])
+def test_catalogue_listing_failures_give_clear_messages(listing, phrase, agent, mcp):
+    mcp.get_course_records.return_value = listing
+
+    result = _converse(agent, "What courses are available?")["result"]
+
+    assert phrase in result["answer"] and result["sources"] == []
 
 
 def test_ordinary_course_questions_are_searched_as_asked(agent, mcp):
@@ -818,12 +863,15 @@ def test_egyptian_and_arabizi_recommendation_requests_start_discovery(message, a
     mcp.search_knowledge_base.assert_not_called()
 
 
-def test_arabizi_catalogue_question_searches_without_discovery(agent, mcp):
+def test_arabizi_catalogue_question_lists_without_discovery(agent, mcp):
+    mcp.get_course_records.return_value = {**CATALOGUE, "records": [dict(RECORD)]}
+
     result = _converse(agent, "3ayez a3raf el courses el mota7a")["result"]
 
     assert result["mode"] is None and result["pending_field"] is None
-    mcp.search_knowledge_base.assert_called_once()
+    mcp.get_course_records.assert_called_once()
     assert result["response_language"] == "ar"
+    assert "**Flutter Foundations** (FL-101)" in result["answer"]
 
 
 # --------------------------------------------------------------------

@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -226,6 +227,20 @@ class CurriculumToolbox:
             return {"status": "ok", "curricula": self.store.list(status, max(1, min(int(limit), 200)))}
         return self._safely("list_curricula", run)
 
+    # ------------------------------------------------------ bilingual pair
+
+    def link_curriculum_translation(self, first_id, second_id) -> dict:
+        def run():
+            self.store.link_translation(first_id, second_id)
+            return {"status": "ok"}
+        return self._safely("link_curriculum_translation", run)
+
+    def get_curriculum_translation(self, curriculum_id) -> dict:
+        """The sibling curriculum id in the other language, if this curriculum has a bilingual companion."""
+        def run():
+            return {"status": "ok", "curriculum_id": self.store.translation_of(curriculum_id)}
+        return self._safely("get_curriculum_translation", run)
+
     # ---------------------------------------------------------------- PDF
 
     def render_curriculum_pdf(self, curriculum_id, version=None, language=None) -> dict:
@@ -240,9 +255,13 @@ class CurriculumToolbox:
             if language_ != record["content"].get("language"):
                 return _invalid("The PDF is rendered in the curriculum's own language; "
                                 "revise the curriculum to change its language.")
+            if record.get("version_status") != "approved":
+                return _invalid("A curriculum PDF is the approved final document: it is generated only after an "
+                                "administrator approves this version.")
             data, pages = render_pdf(record)
-            filename = f"{curriculum_id}_v{record['version']}_{language_}.pdf"
-            if not re.fullmatch(r"CUR-[0-9a-f]{12}_v\d+_(ar|en)\.pdf", filename):
+            # Every render gets its own file, so an earlier record never points at a later file.
+            filename = f"{curriculum_id}_v{record['version']}_{language_}_{uuid.uuid4().hex[:8]}.pdf"
+            if not re.fullmatch(r"CUR-[0-9a-f]{12}_v\d+_(ar|en)_[0-9a-f]{8}\.pdf", filename):
                 return _invalid("Unsafe file name.")
             self.documents_dir.mkdir(parents=True, exist_ok=True)
             (self.documents_dir / filename).write_bytes(data)

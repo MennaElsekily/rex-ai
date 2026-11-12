@@ -13,7 +13,7 @@ import pytest
 from agents.conversation_store import ConversationStore
 from agents.curriculum_research.alignment import match_framework
 from agents.curriculum_research.curriculum_agent import CurriculumAgent
-from tests.curriculum_fakes import FakeLLM, canned_answers, in_process_tools
+from tests.curriculum_fakes import FakeLLM, bilingual_answers, canned_answers, in_process_tools
 from tests.curriculum_fixtures import FRAMEWORK
 
 CONTEXT = {"conversation_id": "admin-align"}
@@ -82,7 +82,9 @@ def test_alignment_is_evidence_based_and_saved_as_a_new_version(tools, tmp_path)
     prompt = fake.prompts("AlignmentJudgement")[0]
     assert "R1: Prepare and clean a dataset for analysis" in prompt and "possible evidence" in prompt
     assert "Alignment with Test Competency Framework (1.0)" in result["message"]
-    assert "not accreditation" in result["message"] and result["document"]["pages"] >= 2
+    assert "not accreditation" in result["message"]
+    # The aligned version is pending review: its PDF is generated only once an admin approves it.
+    assert result["document"] is None and "generated after an administrator approves" in result["message"]
 
 
 def test_gaps_carry_recommendations(tools, tmp_path):
@@ -112,13 +114,17 @@ def test_a_compliance_claim_in_the_alignment_keeps_it_a_draft(tools, tmp_path):
 
 
 def test_generation_that_names_a_framework_is_aligned_before_saving(tools, tmp_path):
-    agent, fake = make_agent(tools, tmp_path, canned_answers(AlignmentJudgement=GOOD))
+    agent, fake = make_agent(tools, tmp_path, bilingual_answers(AlignmentJudgement=GOOD))
 
     response = ask(agent, "Create a beginner curriculum about cloud computing, 40 hours, aligned with the test framework")
 
     record = tools.store.get(response["result"]["curriculum_id"])
     assert record["version"] == 1 and record["content"]["alignment"]["framework"]["framework_id"] == "test-framework"
-    assert fake.steps()[-1] == "AlignmentJudgement"
+    # Alignment happens before saving; the bilingual companion's translation happens after.
+    steps = fake.steps()
+    first_translation = steps.index("TranslationBatch")
+    assert steps[first_translation - 1] == "AlignmentJudgement"
+    assert set(steps[first_translation:]) == {"TranslationBatch"}
 
 
 def test_a_plain_topic_word_does_not_trigger_alignment(tmp_path):

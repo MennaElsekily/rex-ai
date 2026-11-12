@@ -22,15 +22,20 @@ User/Admin choice in the UI is not trusted for authorization.
 - Applications: approving a tender starts the application workflow
   (agents/rfp_research/applications.py) right after the approval is
   saved. Submitting on the academy's behalf needs the admin's explicit
-  authorisation; preparation is dry-run only and nothing is ever sent.
+  authorisation; preparation is dry-run only and nothing is ever sent
+  by that workflow itself. send_application_email is the one deliberate
+  exception: a separate, explicit admin action that really sends an
+  already-prepared draft through Resend (agents/rfp_research/
+  email_sending.py), test-mode and recipient-restricted by default.
   Every application change below (manual submission, outcome, retry,
   resolving an unknown result) needs the admin session. The academy's
   application profile and documents are managed here too.
 
 - Curricula (Agent 3): the agent saves drafts and new versions as
   "draft" or "pending_review"; only here can an admin approve the current
-  version or request changes (with notes), with an audit trail. PDFs are
-  read here for download (rendered on demand if a version has none).
+  version or request changes (with notes), with an audit trail. A
+  curriculum PDF is the approved final document: it is generated when an
+  admin approves a version and is only ever served for approved versions.
 
 - Documents (Agent 4): the agent generates drafts from approved curricula
   only. Editing, approving and downloading happen here, behind the admin
@@ -52,6 +57,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import hmac
+import logging
 import re
 import secrets
 import time
@@ -59,16 +65,20 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from agents.config import get_secret, get_setting
-from agents.curriculum_research import curriculum_tools
+from agents.curriculum_research import curriculum_tools, editing as curriculum_editing
 from agents.curriculum_research.curriculum_store import STATUSES as CURRICULUM_STATUSES, CurriculumStore
 from agents.document_generation import document_tools
 from agents.document_generation.document_store import STATUSES as DOCUMENT_STATUSES, DocumentStore
 from agents.document_generation.schemas import EDITABLE_SOURCES, EDITABLE_TYPES
 from agents.marketing import composer as marketing_composer, marketing_tools
 from agents.marketing.marketing_store import MarketingStore, STATUSES as CAMPAIGN_STATUSES
+from agents.pending_workflows import PendingWorkflowStore
 from agents.rfp_research.application_profile import DOCUMENT_TYPES, PROFILE_FIELDS, ApplicationProfile
 from agents.rfp_research.applications import ApplicationWorkflow
+from agents.rfp_research.email_sending import EmailSendingService
 from agents.rfp_research.opportunity_store import APPROVAL_STATUSES, OpportunityStore
+
+logger = logging.getLogger(__name__)
 
 SESSION_IDLE_SECONDS = 30 * 60
 MAX_FAILED_ATTEMPTS = 5
@@ -101,6 +111,7 @@ class AdminService:
         document_store: Optional[DocumentStore] = None,
         document_output_dir: Optional[str] = None,
         marketing_store: Optional[MarketingStore] = None,
+        pending_workflow_store: Optional[PendingWorkflowStore] = None,
     ) -> None:
         """
         orchestrator_factory: builds the Admin orchestrator lazily, so
@@ -117,6 +128,7 @@ class AdminService:
         (DOCUMENT_DB_PATH / DOCUMENT_OUTPUT_DIR).
         marketing_store: for tests; defaults to the database the Marketing MCP
         server uses (MARKETING_DB_PATH).
+        pending_workflow_store: for tests; defaults to agents/pending_workflows.sqlite3.
         """
         self._orchestrator_factory = orchestrator_factory
         self._orchestrator = None
@@ -131,6 +143,8 @@ class AdminService:
         self._marketing_store = marketing_store
         self._marketing_toolbox: Optional[marketing_tools.MarketingToolbox] = None
         self._application_workflow: Optional[ApplicationWorkflow] = None
+        self._email_sending_service: Optional[EmailSendingService] = None
+        self._pending_workflow_store = pending_workflow_store
         self._passcode = passcode if passcode is not None else get_secret("REX_ADMIN_PASSCODE")
         self._clock = clock
         self._sessions: dict[str, float] = {}
@@ -219,10 +233,85 @@ class AdminService:
             self._opportunity_store = self._admin_orchestrator().rfp_research_agent.opportunity_store
         return self._opportunity_store
 
+    def _pending_workflows(self) -> PendingWorkflowStore:
+        if self._pending_workflow_store is None:
+            self._pending_workflow_store = PendingWorkflowStore()
+        return self._pending_workflow_store
+
     def ask(self, token: str, message: str, context: Optional[dict] = None) -> dict:
         """Send a request through the Admin orchestrator (REX excluded)."""
         self._require(token)
-        return self._admin_orchestrator().handle_request(message, context=context or {})
+        context = dict(context or {})
+        response = self._admin_orchestrator().handle_request(message, context=context)
+        return self._pause_for_approval_if_needed(response, message, context)
+
+    def _pause_for_approval_if_needed(self, response: dict, message: str, context: dict) -> dict:
+        """
+        A chained request ("create a curriculum and a document/campaign
+        from it") that stopped because the curriculum it just created
+        needs approval first: remember it (keyed by that curriculum_id)
+        instead of just reporting the later agent's failure, so
+        approve_curriculum() can resume automatically. See
+        agents/pending_workflows.py.
+        """
+        results = response.get("result")
+        if not isinstance(results, list) or not results:
+            return response
+        first = results[0]
+        first_result = first.get("result") if isinstance(first.get("result"), dict) else {}
+        rest = results[1:]
+        if (first.get("agent_name") == "curriculum_research" and first.get("status") == "success"
+                and first_result.get("kind") == "question" and rest and all(
+                    r.get("status") == "error" and isinstance(r.get("result"), dict)
+                    and r["result"].get("kind") == "not_approved" for r in rest)):
+            # The curriculum agent asked for missing details (hours, level...): the
+            # later steps did not fail -- they wait for that curriculum to exist.
+            is_ar = context.get("preferred_language") == "ar"
+            note = ("بانتظار إجابتك عن أسئلة المنهج. بعد إنشاء المنهج واعتماده، اطلب هذه الخطوة مجددًا."
+                    if is_ar else "Waiting for your answer to the curriculum questions. Once the curriculum is "
+                                  "created and approved, ask for this step again.")
+            updated_rest = [{**r, "status": "waiting_for_input", "error_message": None,
+                             "result": {**r["result"], "kind": "awaiting_input", "message": note}} for r in rest]
+            updated = [first, *updated_rest]
+            from agents.orchestrator import synthesize_results
+            return {**response, "status": "success", "error_message": None, "result": updated,
+                    "summary": synthesize_results(updated, "ar" if is_ar else "en")}
+        if not (first.get("agent_name") == "curriculum_research" and first.get("status") == "success"
+                and first_result.get("kind") == "curriculum" and first_result.get("review_status") == "pending_review"):
+            return response
+        if not rest or not all(
+            r.get("status") == "error" and isinstance(r.get("result"), dict) and r["result"].get("kind") == "not_approved"
+            for r in rest
+        ):
+            return response
+
+        curriculum_id = first_result["curriculum_id"]
+        conversation_id = context.get("conversation_id")
+        # Each agent's own "not_approved" result already carries the exact
+        # request it had resolved (document_type, marketing options, ...);
+        # keeping it lets resume hand it back directly instead of
+        # re-matching the original free text against every approved
+        # curriculum (which can be ambiguous, e.g. two courses with
+        # similar titles).
+        remaining_requests = [{"agent_name": r["agent_name"], **{k: v for k, v in r["result"].items()
+                              if k not in ("kind", "message")}} for r in rest]
+        if isinstance(conversation_id, str) and conversation_id.strip():
+            self._pending_workflows().save_pending(curriculum_id, conversation_id, message, context,
+                                                   remaining_requests)
+        is_ar = context.get("preferred_language") == "ar"
+        note = (f"المنهج ({curriculum_id}) جاهز لمراجعتك في تبويب المناهج. بعد اعتماده سأستكمل تلقائيًا بقية هذا "
+                f"الطلب." if is_ar else
+                f"The curriculum ({curriculum_id}) is ready for your review in the Curricula tab. Once you "
+                f"approve it, I will automatically continue and finish the rest of this request.")
+        waiting_note = ("في انتظار اعتماد المنهج." if is_ar else "Waiting for the curriculum to be approved.")
+        updated_first = {**first, "result": {**first_result,
+                         "message": f"{first_result.get('message', '')}\n\n{note}".strip()}}
+        updated_rest = [{**r, "status": "paused", "result": {**r["result"], "kind": "awaiting_approval",
+                        "message": waiting_note}} for r in rest]
+        updated = [updated_first, *updated_rest]
+        from agents.orchestrator import synthesize_results
+        return {**response, "status": "success", "error_message": None, "result": updated,
+                "summary": synthesize_results(updated, "ar" if is_ar else "en")}
 
     def search_tenders(self, token: str, options: dict, context: Optional[dict] = None) -> dict:
         """
@@ -337,10 +426,61 @@ class AdminService:
         return self._tenders().record_application_outcome(opportunity_id, outcome, admin, notes=notes)
 
     def application_history(self, token: str, opportunity_id: str) -> dict:
-        """Every attempt and every audited decision for one tender."""
+        """Every attempt, every real email send and every audited decision for one tender."""
         self._require(token)
         store = self._tenders()
-        return {"attempts": store.attempts(opportunity_id), "audit": store.audit_trail(opportunity_id)}
+        return {"attempts": store.attempts(opportunity_id), "audit": store.audit_trail(opportunity_id),
+                "email_sends": store.email_sends(opportunity_id)}
+
+    def _emailer(self) -> EmailSendingService:
+        if self._email_sending_service is None:
+            self._email_sending_service = EmailSendingService(self._tenders())
+        return self._email_sending_service
+
+    def email_sending_mode(self, token: str) -> dict:
+        """
+        The mode and the recipient a send would use (shown before the admin
+        confirms): REX_EMAIL_TEST_RECIPIENT in every mode, as the send itself
+        enforces (email_sending.send_prepared_email).
+        """
+        self._require(token)
+        from agents.rfp_research import email_sending
+        mode = email_sending.email_mode()
+        recipient = email_sending.configured_recipient()
+        valid = bool(email_sending._EMAIL.match(recipient))   # the same check the send itself enforces
+        return {"mode": mode, "is_production": mode == email_sending.PRODUCTION,
+                "recipient": recipient if valid else "", "recipient_configured": valid,
+                # (kept for older callers: the same values)
+                "test_recipient": recipient if valid else "", "test_recipient_configured": valid}
+
+    def current_email_draft(self, token: str, opportunity_id: str) -> Optional[dict]:
+        """The prepared email for this tender's latest attempt, with any saved admin edit applied."""
+        self._require(token)
+        return self._emailer().current_draft(opportunity_id)
+
+    def save_email_draft(self, token: str, opportunity_id: str, subject: str, body: str) -> dict:
+        """Saves the admin's edited subject/body; can be reopened and edited again before sending."""
+        admin = self._require(token)
+        return self._emailer().save_draft(opportunity_id, subject, body, admin)
+
+    def discard_email_draft(self, token: str, opportunity_id: str) -> bool:
+        """Reverts the review screen to the originally generated draft."""
+        self._require(token)
+        return self._emailer().discard_draft(opportunity_id)
+
+    def send_application_email(self, token: str, opportunity_id: str) -> dict:
+        """
+        Really sends the dry-run draft already prepared for this tender,
+        through Resend. In test and production mode alike it goes only to
+        the configured REX_EMAIL_TEST_RECIPIENT, never to the tender's own
+        contact (kept as intended_recipient, for reference only); see
+        agents/rfp_research/email_sending.py.
+        """
+        admin = self._require(token)
+        sent = self._emailer().send_prepared_email(opportunity_id, admin)
+        return {"email_id": sent.email_id, "mode": sent.mode, "to": sent.to,
+                "intended_recipient": sent.intended_recipient, "redirected": sent.redirected,
+                "provider": sent.provider, "provider_reference": sent.provider_reference}
 
     # ------------------------------------------------ application profile
 
@@ -403,15 +543,104 @@ class AdminService:
         return {"curriculum": record, "versions": store.versions(curriculum_id),
                 "documents": store.documents(curriculum_id), "audit": store.audit_trail(curriculum_id)}
 
+    def edit_curriculum(self, token: str, curriculum_id: str, edits: dict) -> dict:
+        """
+        Saves the admin's changes (agents/curriculum_research/editing.py
+        builds `edits` from the admin's text fields) as a NEW version --
+        the current one is never changed in place, so every earlier
+        version (including the originally generated one) is kept exactly
+        as it was and stays downloadable. The new version always starts
+        at pending_review (or draft, if it fails validation) and is
+        never silently treated as approved: approved_version keeps
+        pointing at the last version an administrator actually approved
+        until a newer one is approved in turn (store.save_version /
+        store.approve already work this way; see curriculum_store.py).
+        """
+        admin = self._require(token)
+        tools = self._curricula()
+        current = tools.store.get(curriculum_id)
+        if current is None:
+            raise ValueError(f"Unknown curriculum: {curriculum_id}")
+        updated_content = curriculum_editing.apply_edits(current["content"], edits)
+        validation = tools.validate_curriculum(curriculum=updated_content, requested_hours=updated_content["total_hours"])
+        if validation.get("status") != "ok":
+            raise ValueError(validation.get("message") or "The curriculum could not be validated.")
+        return tools.store.save_version(
+            updated_content, {k: validation[k] for k in ("valid", "errors", "warnings")},
+            current.get("sources") or [], curriculum_id=curriculum_id,
+            change_summary="Edited by an administrator", created_by=admin)
+
     def approve_curriculum(self, token: str, curriculum_id: str, version: int, notes: Optional[str] = None) -> dict:
         """Approve the current version (it must be pending review); audited under this admin session."""
         admin = self._require(token)
-        return self._curricula().store.approve(curriculum_id, int(version), admin, notes)
+        tools = self._curricula()
+        result = tools.store.approve(curriculum_id, int(version), admin, notes)
+        # Only now, after the approval is saved, is this exact version's final PDF generated.
+        # (If rendering fails, curriculum_pdf renders it on the first download instead.)
+        rendered = tools.render_curriculum_pdf(curriculum_id, int(version))
+        if rendered.get("status") != "ok":
+            logger.warning("The approved PDF of %s v%s could not be rendered: %s",
+                           curriculum_id, version, rendered.get("message"))
+        self._resume_pending_workflow(curriculum_id)
+        return result
 
     def request_curriculum_changes(self, token: str, curriculum_id: str, version: int, notes: str) -> dict:
         """Send the current version back with the admin's notes (required)."""
         admin = self._require(token)
-        return self._curricula().store.request_changes(curriculum_id, int(version), admin, notes)
+        result = self._curricula().store.request_changes(curriculum_id, int(version), admin, notes)
+        self._cancel_pending_workflow(curriculum_id)
+        return result
+
+    def _resume_pending_workflow(self, curriculum_id: str) -> None:
+        """
+        Finishes an Ask Agents request that paused here (see ask()'s
+        _pause_for_approval_if_needed): runs the SAME orchestrator again
+        -- with the exact request the waiting agent had already resolved
+        (document_type, marketing options, ...) when there is exactly
+        one, so it never has to re-match the original free text against
+        every approved curriculum. With more than one waiting agent
+        (a three-way curriculum -> document -> marketing chain), that
+        exact replay is not yet supported; the original text is
+        resubmitted instead, skipping only the curriculum step.
+        Either way, the result is kept for agents_tab() to show as the
+        next assistant turn in that conversation.
+        """
+        pending = self._pending_workflows().pending_for_curriculum(curriculum_id)
+        if pending is None:
+            return
+        self._pending_workflows().clear_pending(curriculum_id)
+        requests = pending["remaining_requests"]
+        orchestrator = self._admin_orchestrator()
+        if len(requests) == 1 and requests[0]["agent_name"] in ("document_generation", "marketing"):
+            agent_name = requests[0]["agent_name"]
+            form = {k: v for k, v in requests[0].items() if k != "agent_name"}
+            form_key = "document_request" if agent_name == "document_generation" else "marketing_request"
+            context = {**pending["context"], form_key: form}
+            response = orchestrator.handle_request(pending["request_text"], context=context)
+        else:
+            context = {**pending["context"], "skip_agents": ["curriculum_research"]}
+            response = orchestrator.handle_request(pending["request_text"], context=context)
+        self._pending_workflows().save_resumed_result(pending["conversation_id"], response)
+
+    def _cancel_pending_workflow(self, curriculum_id: str) -> None:
+        pending = self._pending_workflows().pending_for_curriculum(curriculum_id)
+        if pending is None:
+            return
+        self._pending_workflows().clear_pending(curriculum_id)
+        note = (f"طُلب تعديل المنهج ({curriculum_id})، فتم إلغاء الجزء المتبقي من طلبك. عدّل المنهج ثم أعد تقديم "
+                f"طلبك عند اعتماده." if pending["context"].get("preferred_language") == "ar" else
+                f"Changes were requested for the curriculum ({curriculum_id}), so the rest of your request was "
+                f"cancelled. Revise it and ask again once it is approved.")
+        self._pending_workflows().save_resumed_result(pending["conversation_id"], {
+            "request_id": "cancelled", "agent_name": "orchestrator", "status": "error", "error_message": note,
+            "result": [{"agent_name": "orchestrator", "status": "error", "result": None, "error_message": note}]})
+
+    def pending_chat_update_for(self, token: str, conversation_id: str) -> Optional[dict]:
+        """A resumed (or cancelled) workflow's result for this conversation, if one finished since last checked."""
+        self._require(token)
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            return None
+        return self._pending_workflows().pop_resumed_result(conversation_id)
 
     def curriculum_audit_trail(self, token: str, curriculum_id: Optional[str] = None) -> list[dict]:
         self._require(token)
@@ -419,24 +648,70 @@ class AdminService:
 
     def curriculum_pdf(self, token: str, curriculum_id: str, version: Optional[int] = None) -> Optional[dict]:
         """
-        {"filename", "data"} for one version's PDF, rendering it first if
-        that version has none (e.g. made before PDFs existed). None if the
+        {"filename", "data", "version"} for the approved PDF of one version
+        (by default the latest approved version). A PDF exists only for an
+        approved version: asking for any other version raises ValueError.
+        It is rendered on demand if that approved version has none yet (e.g.
+        approved before PDFs existed, or its render failed). None if the
         curriculum or version does not exist.
         """
         self._require(token)
         tools = self._curricula()
-        record = tools.store.get(curriculum_id, version)
+        head = tools.store.get(curriculum_id)
+        if head is None:
+            return None
+        version = version if version is not None else head.get("approved_version")
+        if version is None:
+            raise ValueError("No version of this curriculum has been approved yet; its PDF is generated after approval.")
+        record = tools.store.get(curriculum_id, int(version))
         if record is None:
             return None
+        if record.get("version_status") != "approved":
+            raise ValueError(f"Version {record['version']} is not approved; its PDF is generated after approval.")
         documents = [d for d in tools.store.documents(curriculum_id) if d["version"] == record["version"]]
         data = tools.document_bytes(documents[-1]["document_id"]) if documents else None
         if data is None:
             rendered = tools.render_curriculum_pdf(curriculum_id, record["version"])
             if rendered.get("status") != "ok":
                 raise ValueError(rendered.get("message") or "The PDF could not be rendered.")
-            documents = [rendered["document"]]
             data = tools.document_bytes(rendered["document"]["document_id"])
-        return {"filename": documents[-1]["filename"], "data": data}
+        language = record["content"].get("language", "en")
+        # The stored file name is unique per render; the downloaded one is the readable version name.
+        return {"filename": f"{curriculum_id}_v{record['version']}_{language}.pdf", "data": data,
+                "version": record["version"]}
+
+    def curriculum_translation(self, token: str, curriculum_id: str) -> Optional[str]:
+        """The sibling curriculum id in the other language, if this one has a bilingual companion."""
+        self._require(token)
+        return self._curricula().store.translation_of(curriculum_id)
+
+    def curricula_pdf_zip(self, token: str, curriculum_id: str) -> dict:
+        """
+        The approved PDFs of a curriculum and, if it has one, its bilingual
+        companion, as one ZIP -- each language's latest APPROVED version.
+        Raises ValueError until every language in the pair has an approved
+        version (an unapproved curriculum has no final PDF to bundle).
+        """
+        self._require(token)
+        import zipfile
+        from io import BytesIO
+
+        store = self._curricula().store
+        ids = [curriculum_id]
+        companion = store.translation_of(curriculum_id)
+        if companion:
+            ids.append(companion)
+        heads = [store.get(one_id) for one_id in ids]
+        if any(h is None for h in heads):
+            raise ValueError(f"Unknown curriculum {curriculum_id}.")
+        if any(h.get("approved_version") is None for h in heads):
+            raise ValueError("The ZIP needs an approved version of every language first.")
+        buffer = BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+            for one_id in ids:
+                pdf = self.curriculum_pdf(token, one_id)
+                archive.writestr(pdf["filename"], pdf["data"])
+        return {"filename": f"{curriculum_id}_bilingual.zip", "data": buffer.getvalue()}
 
 
     # ------------------------------------------------------- documents
@@ -698,6 +973,28 @@ class AdminService:
     def campaign_audit_trail(self, token: str, campaign_id: Optional[str] = None) -> list[dict]:
         self._require(token)
         return self._marketing().store.audit_trail(campaign_id)
+
+    def activity_log(self, token: str) -> list[dict]:
+        """
+        Every audited decision in one chronological list, newest first:
+        tender decisions, and each curriculum / document / campaign
+        version saved, approved or sent back -- the same rows the four
+        stores already keep, read here only to show them together.
+        """
+        self._require(token)
+        rows = [{"when": r["decided_at"], "area": "tender", "item": r.get("title") or r["opportunity_id"],
+                 "version": None, "action": r.get("event") or "review",
+                 "status": f"{r.get('previous_status') or ''} → {r['decision']}".strip(" →"),
+                 "by": r["reviewer"], "notes": ", ".join(f"{k}: {v}" for k, v in (r.get("details") or {}).items())}
+                for r in self._tenders().audit_trail()]
+        for area, trail, id_key in (("curriculum", self._curricula().store.audit_trail(), "curriculum_id"),
+                                    ("document", self._documents().store.audit_trail(), "document_id"),
+                                    ("campaign", self._marketing().store.audit_trail(), "campaign_id")):
+            rows += [{"when": r["at"], "area": area, "item": r[id_key], "version": r.get("version"),
+                      "action": r["event"],
+                      "status": f"{r.get('previous_status') or ''} → {r.get('new_status') or ''}".strip(" →"),
+                      "by": r["actor"], "notes": r.get("notes") or ""} for r in trail]
+        return sorted(rows, key=lambda row: row["when"] or "", reverse=True)
 
 
 class _NoCatalogue:
